@@ -20,10 +20,10 @@
  *
  * **Not a closed vocabulary.** Tables 9 and 10 end in an ellipsis in the
  * excerpt, so codes exist in those classes that the document in hand does not
- * list — and §4.2.5.3.1's worked fault and Figure 3 each carry a code
- * (`ERR_00010`, `ERR_00006`) that no table defines at all. An inbound code
- * absent from this module is therefore an unknown code, not an invalid one, and
- * must not be treated as evidence that a fault was malformed.
+ * list — and §4.6.1's worked fault carries a code that no table defines at all.
+ * An inbound code absent from this module is therefore an unknown code, not an
+ * invalid one, and must not be treated as evidence that a fault was malformed.
+ * Argued in `docs/spec-questions.md` (Q-005).
  */
 
 /**
@@ -62,7 +62,7 @@ export const REGIONAL_ERROR_CODES = {
   // directory, so inbound-only apart from the unsigned-assertion case, which is
   // structural and therefore checkable without a key.
   SIGNER_NOT_TRUSTED: 'ERR_00051',
-  RESPONSIBLE_PARTY_OR_USER_NOT_PERMITTED: 'ERR_00052',
+  RESPONSIBLE_PARTY_OR_OPERATOR_NOT_PERMITTED: 'ERR_00052',
   ASSERTION_NOT_SIGNED: 'ERR_00053',
   PASSWORD_INCORRECT: 'ERR_00054',
   CLOCK_MISALIGNED: 'ERR_00055',
@@ -73,7 +73,7 @@ export const REGIONAL_ERROR_CODES = {
   ROLE_MISSING_OR_INVALID_IN_DIRECTORY: 'ERR_00060',
   PASSWORD_CHANGE_REQUIRED: 'ERR_00061',
   OPERATOR_ACCOUNT_DISABLED: 'ERR_00062',
-  USER_NOT_FOUND: 'ERR_00063',
+  OPERATOR_NOT_FOUND: 'ERR_00063',
   OTP_EXPIRED_OR_INVALID: 'ERR_00064',
   TWO_FACTOR_AUTHENTICATION_REQUIRED: 'ERR_00065',
 } as const;

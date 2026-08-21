@@ -16,5 +16,5 @@ export {
   isRequestContext,
   REQUEST_CONTEXTS,
   RVE_1B_USER_CLIENT_AUTHENTICATION,
-} from './vocabulary.js';
-export type { ApplicationId, ApplicationIdShape, RequestContext } from './vocabulary.js';
+} from './request-vocabulary.js';
+export type { ApplicationId, ApplicationIdShape, RequestContext } from './request-vocabulary.js';

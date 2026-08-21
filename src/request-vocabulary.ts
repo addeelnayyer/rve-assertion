@@ -1,13 +1,12 @@
 /**
- * The regional code vocabulary a request declares itself in — Appendix A.
+ * The regional code vocabulary an RVE-1.b request declares itself in —
+ * Appendix A.
  *
- * Three attributes of the RVE-1.b request draw on this vocabulary, and the
- * specification treats them differently, so this module does too. The request
- * context is drawn from a closed table and is validated against it. The user
- * client authentication code is pinned to one value for the transaction, so it
- * is a constant rather than a parameter. The ApplicationID is an opaque string
- * the AULSS allocates, so nothing here constrains it — the shape checker below
- * is advisory and gates nothing.
+ * Three request attributes draw on this vocabulary, and the specification
+ * treats them differently, so this module does too: the request context is
+ * drawn from a closed table and validated against it, the user client
+ * authentication code is pinned to one value for the transaction, and the
+ * ApplicationID is an opaque string nothing here constrains.
  *
  * **No label from the specification's tables appears here.** The excerpt was
  * shared under a no-redistribution condition, so the codes are reproduced —
@@ -21,14 +20,11 @@
  * The clinical context codes of Appendix A.2, Table 5, in the table's own row
  * order so that a reader with the specification open can follow along.
  *
- * `C.4.2` is reproduced as the table gives it. It sits under the same
- * macro-activity as `C.5.1` and looks like it was meant to read `C.5.2`, and
- * `C.4` separately names an unrelated context — but the table is the
- * vocabulary, and a table entry an IAP may well have implemented literally is
- * not this library's to silently correct. `C.6.4` is likewise absent because
- * the table does not define it. Both are raised in Q-004 of
- * `docs/spec-questions.md`, which also argues the code this list most
- * conspicuously lacks: `C.1.6`, which §4.2.5.2's worked request declares.
+ * Transcribed as the table gives it, including the two places the table looks
+ * to have drifted — `C.4.2` where the numbering suggests `C.5.2`, and the
+ * absent `C.6.4` — and excluding `C.1.6`, which §4.2.5.2's worked request
+ * declares and this table does not define. All three are argued in
+ * `docs/spec-questions.md` (Q-004).
  */
 export const REQUEST_CONTEXTS = [
   'C.1.1',
@@ -81,13 +77,13 @@ export const REQUEST_CONTEXTS = [
  *
  * Closed because the check the IAP performs is a membership test against the
  * contexts the organisation has enabled for the calling ApplicationID
- * (§4.2.5.3.1), and a code outside the table cannot be a member of any such
- * set. Failing at the call site is cheaper than failing as `ERR_00041` after a
- * round trip.
+ * (§4.2.5.3.1), and a code outside the regional table cannot be a member of any
+ * such set. The cost of closing it is argued in `docs/spec-questions.md`
+ * (Q-004).
  */
 export type RequestContext = (typeof REQUEST_CONTEXTS)[number];
 
-const REQUEST_CONTEXT_CODES: ReadonlySet<string> = new Set(REQUEST_CONTEXTS);
+const REQUEST_CONTEXT_LOOKUP: ReadonlySet<string> = new Set(REQUEST_CONTEXTS);
 
 /**
  * Narrows an unknown value to a {@link RequestContext}.
@@ -98,11 +94,11 @@ const REQUEST_CONTEXT_CODES: ReadonlySet<string> = new Set(REQUEST_CONTEXTS);
  * the compiler's word for it is worth nothing. This is the seam at which that
  * convention gets checked.
  *
- * Advisory in the sense that it reports rather than throws: the caller decides
- * whether a misconfigured tenant is a startup failure or a per-request one.
+ * Reports rather than throws, so the caller decides whether a misconfigured
+ * tenant is a startup failure or a per-request one.
  */
 export function isRequestContext(value: unknown): value is RequestContext {
-  return typeof value === 'string' && REQUEST_CONTEXT_CODES.has(value);
+  return typeof value === 'string' && REQUEST_CONTEXT_LOOKUP.has(value);
 }
 
 /**
@@ -112,7 +108,7 @@ export function isRequestContext(value: unknown): value is RequestContext {
  * transaction in which the trusted application authenticated the operator
  * itself, so a caller able to pass a different code would be able to describe a
  * transaction it is not performing. A constant rather than a literal at the
- * call site because Q-002 in `docs/spec-questions.md` may yet move this value,
+ * call site because `docs/spec-questions.md` (Q-002) may yet move this value,
  * and when it does there should be one place to move it.
  */
 export const RVE_1B_USER_CLIENT_AUTHENTICATION = 'A.1.1';
@@ -133,9 +129,11 @@ export type ApplicationId = string;
  *
  * - `caret-separated` — the three-part form §4.2.5.2's prose describes.
  * - `bare` — the single-token form its worked example carries.
- * - `unrecognised` — neither. Not a verdict of invalidity: the specification
- *   describes one form and demonstrates another, so a third is only outside
- *   what the excerpt happens to show.
+ * - `unrecognised` — neither. Not a verdict of invalidity, and the boundary is
+ *   this library's reading rather than the excerpt's: the specification states
+ *   no arity rule and no rule about empty or space-padded parts, so a value
+ *   such as `app^3` is reported `unrecognised` on the strength of the
+ *   three-part form alone.
  */
 export type ApplicationIdShape = 'caret-separated' | 'bare' | 'unrecognised';
 
@@ -146,14 +144,12 @@ const CARET_SEPARATED_SEGMENTS = 3;
  * Reports which attested form `applicationId` takes, for a caller that wants to
  * check tenant configuration at startup.
  *
- * **Advisory. Nothing in this library consults it.** A request builds with any
- * ApplicationID the caller supplies, including an `unrecognised` one, because
- * the specification contradicts itself on the format (Q-003 in
- * `docs/spec-questions.md`) and a library that enforced either form would
- * reject a value the region had allocated. What this affords instead is a
- * deployment check: a tenant whose ApplicationID is `unrecognised` is worth a
- * warning in an onboarding log, where a human can compare it against the
- * registration the AULSS issued.
+ * **Advisory. Nothing in this library consults it**, and a request builds with
+ * any ApplicationID the caller supplies, including an `unrecognised` one. Why
+ * neither form is enforced is argued in `docs/spec-questions.md` (Q-003). What
+ * this affords instead is a deployment check: a tenant whose ApplicationID is
+ * `unrecognised` is worth a warning in an onboarding log, where a human can
+ * compare it against the registration the AULSS issued.
  *
  * Never throws. There is no input it can be handed that is a programming error,
  * because every input is a value some AULSS might have allocated.

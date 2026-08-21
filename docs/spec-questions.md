@@ -166,12 +166,13 @@ narrows that only for a caller that chooses to run it.
 
 **The question as it would be sent.**
 
-> §4.2.5.2 defines the ApplicationID attribute as
-> `[ApplicationID]^[minor_release]^[installazione]`, but the worked request in
-> the same section carries a single identifier with no `^` separators. Which
-> form should a client emit? If the composite form is correct, is the example
-> abbreviated for readability, and are all three parts mandatory or may trailing
-> parts be omitted? Separately, and for us the more important question: are the
+> §4.2.5.2 defines the ApplicationID attribute as three parts joined by `^` —
+> the labelled product identifier, the minor release, and the installation —
+> but the worked request in the same section carries a single identifier with no
+> `^` separators. Which form should a client emit? If the composite form is
+> correct, is the example abbreviated for readability, and are all three parts
+> mandatory or may trailing parts be omitted? Separately, and for us the more
+> important question: are the
 > boundary tables of §2 and the banned-applications list of §4.2.5.3.1 keyed by
 > the full composite value or by the product identifier alone — that is, does
 > banning one installation ban the product, and does a new minor release inherit
@@ -242,6 +243,59 @@ arrives.
 > where the numbering scheme suggests `C.5.2`; and `C.6.4` is absent from an
 > otherwise contiguous administrative group. Are those intentional, and is
 > `C.4.2` the code an IAP will actually accept?
+
+---
+
+### Q-005 — The worked fault carries an error code no table defines, and two tables are left open
+
+**Citations.** §4.6.1 (the management of fault conditions, whose worked fault
+carries `ERR_00010`); Appendix A.5, Table 11 (the class that fault declares,
+whose codes run `ERR_00041` to `ERR_00045`); Appendix A.5, Tables 9 and 10 (both
+of which end in an ellipsis rather than a final row).
+
+**The statement.** §4.6.1's worked fault declares the invalid-security-token
+class and carries `ERR_00010`. Table 11, which defines that class's codes, does
+not contain `ERR_00010` and neither does any other table in Appendix A.5. The
+description the fault gives alongside it corresponds to the refusal that
+Table 11 codes as `ERR_00041`, so the example looks like a code that was
+renumbered when the tables were reorganised and not updated in the prose.
+
+Separately, Tables 9 and 10 each end with an ellipsis where the remaining rows
+would be. The appendix is therefore explicitly partial by its own typography,
+independently of the excerpt's missing pages (Q-001).
+
+**What the code does.** Names the codes the excerpt lists and treats the
+vocabulary as open. `RegionalErrorCode` is a union over what is listed, which is
+sound for typing a code this library produces and unsound for parsing an inbound
+one — so the module says so, and nothing in the library rejects a fault for
+carrying a code it does not recognise. `ERR_00010` deliberately gets no
+constant: naming it would assert that the excerpt defines it somewhere, and it
+does not.
+
+**The basis.** An undefined code and an ellipsis point the same way. A client
+that treats the listed codes as exhaustive would read a legitimate fault as a
+malformed one, and would do it precisely when something unusual had gone wrong —
+the moment the diagnosis matters most. Failing open on an unknown code costs
+nothing, because the code is diagnostic rather than load-bearing: it explains a
+refusal that the fault class has already established.
+
+**The cost.** A caller cannot exhaustively switch on `RegionalErrorCode` and
+trust the compiler's exhaustiveness check to mean what it usually means, because
+the runtime set is larger than the type. The type is honest about the excerpt
+and dishonest about the wire, and that asymmetry has to be held in the reader's
+head.
+
+**The question as it would be sent.**
+
+> The worked fault in §4.6.1 declares `wsse:InvalidSecurityToken` and carries
+> error code `ERR_00010`, but Appendix A.5, Table 11 defines that class as
+> `ERR_00041` to `ERR_00045` and no table in the appendix defines `ERR_00010`.
+> Its description matches the one Table 11 gives for `ERR_00041`. Is the example
+> stale, or is `ERR_00010` a live code the appendix omits? Relatedly, Tables 9
+> and 10 both end in an ellipsis: could you supply the complete set of codes for
+> those two classes? We would like to know whether the appendix is intended to
+> be exhaustive, so that we can decide whether a client may treat an unlisted
+> code as a protocol error or must accept it.
 
 ---
 

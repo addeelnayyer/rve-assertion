@@ -5,7 +5,7 @@ import {
   isRequestContext,
   REQUEST_CONTEXTS,
   RVE_1B_USER_CLIENT_AUTHENTICATION,
-} from './vocabulary.js';
+} from './request-vocabulary.js';
 
 describe('REQUEST_CONTEXTS', () => {
   it('carries no duplicate code', () => {
@@ -51,7 +51,7 @@ describe('RVE_1B_USER_CLIENT_AUTHENTICATION', () => {
 
 describe('applicationIdShape', () => {
   it("reports the prose's caret-separated form", () => {
-    expect(applicationIdShape('2.16.840.1.113883.2.9.2.50.4.5.0999^3^ulss8-pd-0142')).toBe(
+    expect(applicationIdShape('1.2.3.4.5.6.7.8.9.1234^3^ulss8-pd-0142')).toBe(
       'caret-separated',
     );
   });
@@ -59,7 +59,7 @@ describe('applicationIdShape', () => {
   it("reports the bare form the worked examples carry", () => {
     // Question Q-003 in docs/spec-questions.md: §4.2.5.2's own example
     // contradicts its own prose here, so both forms are attested.
-    expect(applicationIdShape('2.16.840.1.113883.2.9.2.50.4.5.0999')).toBe('bare');
+    expect(applicationIdShape('1.2.3.4.5.6.7.8.9.1234')).toBe('bare');
   });
 
   it.each([

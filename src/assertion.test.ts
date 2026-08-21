@@ -16,26 +16,32 @@ const PLANTED_IDENTITY = 'PLANTEDIDENTITY00X';
 
 interface AssertionParts {
   readonly attributes?: string;
+  readonly issuer?: string;
+  readonly subject?: string;
   readonly conditions?: string;
 }
+
+const ISSUER = '<saml:Issuer>https://iap.ulssx.veneto.it</saml:Issuer>';
+const SUBJECT = `<saml:Subject><saml:NameID>${PLANTED_IDENTITY}</saml:NameID></saml:Subject>`;
+const CONDITIONS =
+  '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z"/>';
 
 /**
  * A structurally complete bare assertion element, minus whatever the caller
  * overrides. Deliberately not built from the specification's worked example
- * verbatim: the values are this repository's own.
+ * verbatim: the values are this repository's own. The identifier's middle
+ * segment is an organisation OID, as §4.1.6.2.2 structures an assertion
+ * identifier — not the ApplicationID the request tests carry.
  */
-function assertionXml({ attributes, conditions }: AssertionParts = {}): string {
-  const assertionAttributes =
-    attributes ?? `Version="2.0" ID="${ASSERTION_ID}" IssueInstant="2026-08-21T09:00:00Z"`;
-  const conditionsElement =
-    conditions ?? '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z"/>';
-
+function assertionXml({ attributes, issuer, subject, conditions }: AssertionParts = {}): string {
   return [
-    `<saml:Assertion xmlns:saml="${SAML_ASSERTION_XMLNS}" ${assertionAttributes}>`,
-    `<saml:Issuer>https://iap.ulssx.veneto.it</saml:Issuer>`,
-    `<saml:Subject><saml:NameID>${PLANTED_IDENTITY}</saml:NameID></saml:Subject>`,
-    conditionsElement,
-    `</saml:Assertion>`,
+    `<saml:Assertion xmlns:saml="${SAML_ASSERTION_XMLNS}" `,
+    attributes ?? `Version="2.0" ID="${ASSERTION_ID}" IssueInstant="2026-08-21T09:00:00Z"`,
+    '>',
+    issuer ?? ISSUER,
+    subject ?? SUBJECT,
+    conditions ?? CONDITIONS,
+    '</saml:Assertion>',
   ].join('');
 }
 
@@ -115,14 +121,40 @@ describe('validateAssertion — the structural phase', () => {
     expect(onlyFailure(bytes(assertionXml({ attributes }))).detail).toMatch(expected);
   });
 
+  it('refuses an assertion whose mandatory attribute is present but blank', () => {
+    // An ID of no characters is not an identifier the signature reference can
+    // be bound to, so a blank attribute is refused exactly as an absent one is.
+    const attributes = `Version="2.0" ID="  " IssueInstant="2026-08-21T09:00:00Z"`;
+
+    expect(onlyFailure(bytes(assertionXml({ attributes }))).detail).toMatch(/\bID\b/);
+  });
+
   it('refuses an assertion declaring a SAML version other than 2.0', () => {
     const attributes = `Version="1.1" ID="${ASSERTION_ID}" IssueInstant="2026-08-21T09:00:00Z"`;
 
     expect(onlyFailure(bytes(assertionXml({ attributes }))).detail).toMatch(/Version/);
   });
 
-  it('refuses an assertion with no Conditions element', () => {
-    expect(onlyFailure(bytes(assertionXml({ conditions: '' }))).detail).toMatch(/Conditions/);
+  it.each([
+    ['Issuer', { issuer: '' }],
+    ['Subject', { subject: '' }],
+    ['Conditions', { conditions: '' }],
+  ])('refuses an assertion with no %s element', (name, parts) => {
+    // §4.1.6.2.2 makes each of these mandatory. Presence only — whether the
+    // subject names the operator the responsible-party attribute names is a
+    // question about a document that has to exist first.
+    expect(onlyFailure(bytes(assertionXml(parts))).detail).toMatch(new RegExp(name));
+  });
+
+  it.each([
+    ['Issuer', { issuer: ISSUER + ISSUER }],
+    ['Subject', { subject: SUBJECT + SUBJECT }],
+    ['Conditions', { conditions: CONDITIONS + CONDITIONS }],
+  ])('refuses an assertion carrying more than one %s element', (name, parts) => {
+    // A second one of any of these gives a later check two answers to choose
+    // between, and the choice is what a document meant to be read two ways
+    // relies on.
+    expect(onlyFailure(bytes(assertionXml(parts))).detail).toMatch(new RegExp(name));
   });
 
   it.each([
@@ -130,14 +162,6 @@ describe('validateAssertion — the structural phase', () => {
     ['NotOnOrAfter', '<saml:Conditions NotBefore="2026-08-21T09:00:00Z"/>'],
   ])('refuses an assertion whose Conditions carries no %s', (name, conditions) => {
     expect(onlyFailure(bytes(assertionXml({ conditions }))).detail).toMatch(new RegExp(name));
-  });
-
-  it('refuses an assertion carrying more than one Conditions element', () => {
-    const conditions =
-      '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z"/>' +
-      '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T23:00:00Z"/>';
-
-    expect(onlyFailure(bytes(assertionXml({ conditions }))).detail).toMatch(/Conditions/);
   });
 
   it('reports one failure for a document that fails several structural checks at once', () => {

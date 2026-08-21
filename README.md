@@ -125,8 +125,11 @@ whatever logs the failure.
 
 **Two phases, and the first one stops.** The structural phase asks whether there
 is an assertion here at all: parseable, an assertion element at the root, the
-attributes §4.1.6.2.2 makes mandatory, and exactly one conditions element
-carrying its window. It reports **one** failure and runs nothing further, in
+attributes §4.1.6.2.2 makes mandatory, and exactly one each of the elements it
+requires — the issuer, the subject, and the conditions carrying the validity
+window. The signature is mandatory too and is checked elsewhere, because its
+absence and its being malformed are different regional errors and this phase has
+one code to report. It reports **one** failure and runs nothing further, in
 both directions — it does not accumulate structural failures, and it does not
 let the semantic phase run. Unparseable bytes have no audience to compare and no
 signature to bind, so a list of later failures would report things missing only

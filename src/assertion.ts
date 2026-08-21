@@ -28,12 +28,17 @@
  *
  * The structural phase asks whether there is an assertion here at all:
  * parseable, an assertion element at the root, the attributes §4.1.6.2.2 makes
- * mandatory, and a conditions element carrying its window. It reports one
+ * mandatory, and exactly one each of the elements it requires — the issuer, the
+ * subject, and the conditions carrying the validity window. It reports one
  * failure and stops, in both directions — it does not accumulate structural
  * failures, and it does not let the semantic phase run. Neither would be worth
  * anything: a document that failed to parse has no audience to compare, no
  * window to check and no signature to bind, so every later check would report a
  * missing thing that is missing only because the document is.
+ *
+ * The signature is mandatory too and is deliberately not checked here: §4.1.6.2.2
+ * makes it an element like the others, but its absence and its being malformed
+ * map to different regional error codes, and this phase has one code to report.
  *
  * The semantic phase — the one that runs to completion and reports every
  * failure — arrives with the tickets that give it something to check.
@@ -131,34 +136,17 @@ function malformed(detail: string): AssertionFailure {
   return {
     code: 'malformed',
     detail,
-    // A document that is not recognisable as an assertion token is what
-    // ERR_00023 names — Appendix A.5, Table 9.
+    // A document not recognisable as an assertion token is what ERR_00023
+    // names — Appendix A.5, Table 9. One code for the whole phase, including
+    // the case of a caller handing over a document that is not an assertion at
+    // all: ERR_00022 is the neighbouring code, but it names an assertion token
+    // *absent* from a message an X-Service Provider was checking, and this
+    // library is not that party and has no message. What it can say is that the
+    // bytes it was handed are not a recognisable token, which is ERR_00023.
+    // The annotation is a best match either way — see {@link AssertionFailure}.
     regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_TOKEN_UNRECOGNISABLE,
   };
 }
-
-/**
- * What the structural phase leaves behind for the semantic phase: the parsed
- * document, the assertion element, and the attributes whose presence it just
- * established.
- *
- * Held as the lexical strings the document carries rather than as parsed
- * values. Whether `NotOnOrAfter` is a time at all, and what it means beside the
- * current instant, is the validity-window check's question, not this phase's;
- * turning a string into a `Date` here would be that check, performed early and
- * reported under the wrong code.
- */
-interface AssertionStructure {
-  readonly assertion: Element;
-  readonly id: string;
-  readonly issueInstant: string;
-  readonly notBefore: string;
-  readonly notOnOrAfter: string;
-}
-
-type StructuralPhase =
-  | { readonly ok: true; readonly structure: AssertionStructure }
-  | { readonly ok: false; readonly failure: AssertionFailure };
 
 /**
  * Decodes `assertion` as UTF-8, refusing bytes that are not.
@@ -197,40 +185,88 @@ function parse(source: string): Document | undefined {
   }
 }
 
+/** `Node.ELEMENT_NODE`, named rather than written as a bare 1. */
+const ELEMENT_NODE = 1;
+
 /** The direct children of `element` with this SAML local name. */
 function samlChildren(element: Element, localName: string): readonly Element[] {
-  return Array.from(element.childNodes).filter(
-    (node): node is Element =>
-      node.nodeType === 1 &&
-      (node as Element).namespaceURI === SAML_ASSERTION_NAMESPACE &&
-      (node as Element).localName === localName,
-  );
+  const children: Element[] = [];
+  for (const node of Array.from(element.childNodes)) {
+    if (node.nodeType !== ELEMENT_NODE) {
+      continue;
+    }
+    const child = node as Element;
+    if (child.namespaceURI === SAML_ASSERTION_NAMESPACE && child.localName === localName) {
+      children.push(child);
+    }
+  }
+  return children;
 }
 
-/** The value of `name` on `element`, or `undefined` when it is absent or blank. */
+/**
+ * The value of `name` on `element`, or `undefined` when it is absent.
+ *
+ * A blank value counts as absent. An `ID=""` is not an identifier the signature
+ * reference can be bound to, and an empty `NotOnOrAfter` is not a time — so
+ * treating the two cases alike costs a caller nothing and saves every check
+ * downstream from having to ask twice.
+ */
 function attribute(element: Element, name: string): string | undefined {
   const value = element.getAttribute(name);
   return value === null || value.trim().length === 0 ? undefined : value;
 }
 
 /**
- * Establishes that the bytes are an assertion at all, or names the first reason
- * they are not.
+ * The first of `names` that `element` does not carry, or `undefined` when it
+ * carries all of them.
+ */
+function firstAbsent(element: Element, names: readonly string[]): string | undefined {
+  return names.find((name) => attribute(element, name) === undefined);
+}
+
+/** The attributes §4.1.6.2.2 makes mandatory on the assertion, beside Version. */
+const REQUIRED_ASSERTION_ATTRIBUTES = ['ID', 'IssueInstant'] as const;
+
+/** The attributes §4.1.6.2.2 requires the Conditions element to carry. */
+const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
+
+/**
+ * The elements §4.1.6.2.2 says an assertion MUST contain, that the structural
+ * phase is the right place to insist on.
+ *
+ * `ds:Signature` is mandatory too and is deliberately not here: its absence and
+ * its being malformed map to different regional error codes, so it is checked
+ * where that distinction can be drawn rather than collapsed into `malformed`.
+ *
+ * Presence only. Whether the subject names the same operator as the
+ * responsible-party attribute, and whether the issuer is one this caller
+ * trusts, are semantic questions about a document that has to exist first.
+ */
+const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as const;
+
+/**
+ * Names the first reason `assertion` is not an assertion, or `undefined` when
+ * it is one.
  *
  * The checks run in the order a reader would ask the questions — is it a
  * document, is it *this* document, does it carry what the document must carry —
  * and the first one that fails ends the phase. Ordering them is not a ranking
  * of severity: a later check cannot mean anything until the earlier ones hold.
+ *
+ * Returns the failure alone, and not the parsed document beside it, because
+ * nothing yet reads a parsed document. The semantic phase is what needs one
+ * carried forward, and it can widen this return type when it exists — a
+ * structure built here now would be five fields no test could reach.
  */
-function readStructure(assertion: Uint8Array): StructuralPhase {
+function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined {
   const source = decodeUtf8(assertion);
   if (source === undefined) {
-    return { ok: false, failure: malformed('the assertion bytes are not valid UTF-8.') };
+    return malformed('the assertion bytes are not valid UTF-8.');
   }
 
   const document = parse(source);
   if (document === undefined) {
-    return { ok: false, failure: malformed('the assertion bytes are not well-formed XML.') };
+    return malformed('the assertion bytes are not well-formed XML.');
   }
 
   // A document type declaration is refused rather than ignored. No assertion
@@ -239,10 +275,7 @@ function readStructure(assertion: Uint8Array): StructuralPhase {
   // element tree says what the bytes say is before reading the element tree.
   // Argued in `docs/spec-questions.md` (D-011).
   if (document.doctype !== null) {
-    return {
-      ok: false,
-      failure: malformed('the assertion carries a document type declaration, which is refused.'),
-    };
+    return malformed('the assertion carries a document type declaration, which is refused.');
   }
 
   const element = document.documentElement;
@@ -254,55 +287,45 @@ function readStructure(assertion: Uint8Array): StructuralPhase {
     // The input contract, restated where it is broken: this is the check a
     // caller that handed over a whole SOAP response fails, and the message has
     // to be the one that tells them so.
-    return {
-      ok: false,
-      failure: malformed(
-        'the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller\'s.',
-      ),
-    };
+    return malformed(
+      "the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller's.",
+    );
   }
 
-  const version = attribute(element, 'Version');
-  if (version !== SAML_VERSION) {
-    return { ok: false, failure: malformed(`the assertion does not declare Version "${SAML_VERSION}".`) };
+  if (attribute(element, 'Version') !== SAML_VERSION) {
+    return malformed(`the assertion does not declare Version "${SAML_VERSION}".`);
   }
 
-  const id = attribute(element, 'ID');
-  if (id === undefined) {
-    return { ok: false, failure: malformed('the assertion carries no ID attribute.') };
+  const absentAttribute = firstAbsent(element, REQUIRED_ASSERTION_ATTRIBUTES);
+  if (absentAttribute !== undefined) {
+    return malformed(`the assertion carries no ${absentAttribute} attribute.`);
   }
 
-  const issueInstant = attribute(element, 'IssueInstant');
-  if (issueInstant === undefined) {
-    return { ok: false, failure: malformed('the assertion carries no IssueInstant attribute.') };
+  // Exactly one of each, not at least one. A second Conditions element would
+  // give the validity-window check two windows to choose between, and a choice
+  // is exactly what a document that wants to be read two ways relies on.
+  for (const name of REQUIRED_ASSERTION_ELEMENTS) {
+    if (samlChildren(element, name).length !== 1) {
+      return malformed(`the assertion does not carry exactly one ${name} element.`);
+    }
   }
 
-  // Exactly one, not at least one. A second Conditions element would give the
-  // validity-window check two windows to choose between, and the choice is
-  // exactly the ambiguity a document that wants to be read two ways relies on.
-  const conditions = samlChildren(element, CONDITIONS_ELEMENT);
-  const [window] = conditions;
-  if (window === undefined || conditions.length > 1) {
-    return {
-      ok: false,
-      failure: malformed('the assertion does not carry exactly one Conditions element.'),
-    };
+  const [conditions] = samlChildren(element, CONDITIONS_ELEMENT);
+  if (conditions === undefined) {
+    // Unreachable: the loop above established there is exactly one. Written as
+    // a return rather than an assertion so that the compiler's narrowing and
+    // the runtime's behaviour agree without a cast.
+    return malformed(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
   }
 
-  const notBefore = attribute(window, 'NotBefore');
-  if (notBefore === undefined) {
-    return { ok: false, failure: malformed('the assertion\'s Conditions carries no NotBefore attribute.') };
+  const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
+  if (absentConditionsAttribute !== undefined) {
+    return malformed(
+      `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
+    );
   }
 
-  const notOnOrAfter = attribute(window, 'NotOnOrAfter');
-  if (notOnOrAfter === undefined) {
-    return {
-      ok: false,
-      failure: malformed('the assertion\'s Conditions carries no NotOnOrAfter attribute.'),
-    };
-  }
-
-  return { ok: true, structure: { assertion: element, id, issueInstant, notBefore, notOnOrAfter } };
+  return undefined;
 }
 
 /**
@@ -322,12 +345,12 @@ function readStructure(assertion: Uint8Array): StructuralPhase {
  * carries the attributes a service requires, or is signed at all.
  */
 export function validateAssertion(assertion: Uint8Array): AssertionValidation {
-  const structure = readStructure(assertion);
-  if (!structure.ok) {
-    return { valid: false, failures: [structure.failure] };
+  const structural = structuralFailure(assertion);
+  if (structural !== undefined) {
+    return { valid: false, failures: [structural] };
   }
 
-  // The semantic phase runs here, over `structure.structure`, and reports every
-  // failure rather than the first.
+  // The semantic phase runs here, over the parsed document this phase will hand
+  // it, and reports every failure rather than the first.
   return { valid: true };
 }

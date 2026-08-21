@@ -963,3 +963,149 @@ The cost: if the region ever emits two restrictions intending their union, the
 library refuses an assertion its X-Service Provider would have accepted. That
 would be visible immediately, as a refusal naming the audience, rather than as a
 silent acceptance.
+
+### D-019 — The operator's tax code is compared, never validated
+
+**Citations.** §4.1.6.2.2 (the subject's `NameID`, and the `ResponsibleParty`
+attribute, both of which RVE-1.b populates with the tax code the IAP determined
+by querying its DB or Directory Server); §4.1.8, Table 3, which marks both
+Required and marks the responsible party *Checked*.
+
+Neither section states a format for the value, and nothing in the excerpt names
+a code system for it, gives a length, or offers a check character rule. The
+validator therefore compares the two places the assertion carries the identity
+and reports the value on the success branch, and does not ask whether either is
+a well-formed Codice Fiscale.
+
+The basis is that the question the library can answer is a different question
+from the one a format check answers. §4.1.6.2.2 makes the IAP the authority on
+the value: it derives it from the organisation's directory, and a regionally
+issued temporary or surrogate identifier is exactly the sort of thing that
+directory can hold and this library has never heard of. A format check would
+therefore refuse assertions a regional service accepts, which is the failure
+mode that leaves a paediatrician unable to retrieve a record.
+
+It would also buy nothing. A well-formed tax code is not a real one, and the
+identity risk §4.1.6.2.2 actually creates is the IAP resolving *two* people for
+one request — which a format check passes and a comparison catches. So the
+library checks that the assertion says one thing about who the operator is, and
+leaves believing the thing to the region.
+
+The cost: an assertion carrying an obviously corrupt identifier in both places
+consistently is accepted here and refused by the X-Service Provider, one round
+trip later, in the region's vocabulary rather than this library's.
+
+### D-020 — The two identities are compared with case folded away
+
+**Citations.** §4.1.6.2.2 (`NameID` and `ResponsibleParty`, both the tax code);
+§4.1.6.2.2's worked assertion, which writes the same code in upper case in both
+places.
+
+The comparison folds case — locale-independently — and is otherwise exact. The
+values are already free of the whitespace an indented document puts around them,
+since a comparison that refused an assertion for how it was formatted would be
+refusing formatting rather than identity.
+
+The basis is that folding cannot lose a distinction that matters. A Codice
+Fiscale is defined over letters and digits and the region writes it in upper
+case, and case folding is injective on distinct letters — so two different tax
+codes cannot fold to one, and the only pairs it merges are two spellings of the
+same code. Folding therefore removes a way of refusing a correct assertion and
+gives up no part of the check. Locale-independent, because whose operator this
+is must not depend on the locale of the machine asking.
+
+The cost: an IAP that used case to distinguish two identifiers — which no
+regional document suggests, and which the tax code's own definition forbids —
+would have that distinction ignored here. Contrast D-019: not validating the
+format is a decision to leave a question alone, whereas this one answers a
+question, and the answer is that case is not part of who the operator is.
+
+### D-021 — The responsible party is required whatever the calling service asks
+
+**Citations.** §4.1.8, Table 3, which marks `ResponsibleParty` Required in the
+assertion and Checked by the actor; §4.2.5.3.1 (the checks are the
+organisation's policy); Q-001, the absent pages where a required-attribute
+matrix for the RVE-1.b *assertion* would have been stated.
+
+Attribute presence is otherwise driven entirely by the policy the caller passes,
+because §4.2.5.3.1 makes the checks an actor performs a matter of organisational
+policy and §3.1.1 describes services that refuse an assertion another service
+accepts. `ResponsibleParty` is the one exception: the validator requires it of
+every assertion, whether the calling service named it or not.
+
+The basis is that the library's own identity cross-check reads it. An assertion
+that omits it is not an assertion that failed the cross-check — it is one the
+cross-check cannot be run against, and a validator that quietly skipped the
+check would make omitting the attribute the cheapest way past it. Table 3 marks
+the attribute Required in the nearest surviving matrix, so requiring it is also
+what the document in hand says, as far as it says anything.
+
+The cost is a policy a caller cannot express: a service that genuinely accepts
+an assertion with no responsible party cannot say so here. Nothing in the
+excerpt describes such a service, and Q-001 is the question that would settle
+it.
+
+### D-022 — A local failure is annotated with the region's nearest code, not its exact one
+
+**Citations.** Appendix A.5, Tables 11 and 12 (the codes an X-Service Provider
+raises); Q-005, which establishes that those tables are open-ended; §4.2.5.3.1,
+which makes the checks an actor performs a matter of organisational policy.
+
+Every failure this library reports carries a regional error code beside it, and
+no code in Appendix A.5 names the check that produced it. The tables name
+outcomes the region reaches — *this value does not permit access*, *this tax
+code does not match the one the AULSS holds* — reached against information the
+region holds and this library does not. The library therefore annotates each
+local failure with the nearest code the region has, and says in the type that
+the annotation is a best match rather than a verdict.
+
+Three of those choices are worth naming, because a reader could reasonably have
+expected another:
+
+- A **missing required attribute** takes the Table 11 code for that attribute
+  where one exists, and ERR_00058 where none does. Table 11 grades values rather
+  than noticing absences, and a required-attribute list is precisely an
+  organisation's policy, which is what ERR_00058 names.
+- A **missing `Role`** takes ERR_00060 rather than Table 11's ERR_00042. Both
+  concern the role; only ERR_00060 concerns one that is not there, and ERR_00042
+  is a judgement about a value that this library does not make.
+- An **identity mismatch** takes ERR_00059. The region reaches that code by
+  comparing the assertion against the AULSS's directory and this library reaches
+  it by comparing the assertion against itself, but the disagreement is about
+  the same value and no other code is about that value at all.
+
+The basis is that the annotation exists to make one support conversation
+possible, not to predict a fault. A caller branching on `regionalErrorCode`
+rather than on the library's own failure code is branching on a best match, and
+the type documentation says so.
+
+The cost: an IAP or X-Service Provider that refused the same assertion might
+report a different code, and a support engineer comparing the two would see two
+codes for one problem. The library's own code is the stable one.
+
+### D-023 — An assertion attesting more than one authentication level attests none
+
+**Citations.** §4.1.6.2.2 (`authLevel`, and the one value it names); §4.1.8,
+Table 3, which lists `authLevel` as a single optional parameter in both
+directions; D-007.
+
+The specification writes `authLevel` as one attribute with one value and never
+contemplates two. SAML permits an attribute to carry several values, so an
+assertion can arrive attesting two levels at once. The validator refuses it,
+whether or not the calling service asked for a level at all.
+
+The basis is that there is no safe reading. Taking the first value is the
+collapsing this library refuses everywhere else — an assertion attesting the
+required level *and* a weaker one would pass a check the weaker value was hidden
+behind. Taking the strongest would have the library rank a scale the excerpt
+does not publish (D-007). Reporting nothing on the success branch would hide an
+attribute that is there. What is left is that an assertion contradicting itself
+about how strongly the operator authenticated attests nothing, and no service is
+safe for that — which is why the refusal is not conditional on the policy.
+
+Annotated with ERR_00058 rather than ERR_00065, deliberately: ERR_00065 says a
+service demanded a second factor, and on this path none did. See D-022.
+
+The cost: if the region later defines `authLevel` as a list — as it did define
+`codAziendaAuth` as one (Q-007) — this refuses a conforming assertion, and the
+fix is here rather than in a caller's configuration.

@@ -2,14 +2,16 @@
  * The assertion validator — §4.1.6.2.2, which §4.2.6 makes RVE-1.b's response
  * structure by reference.
  *
- * **Status: incomplete.** The structural phase, the validity window and the
- * audience are here; required attributes, identity cross-check and signature
- * integrity are not. So a `valid: true` result from this build means *this
- * document is shaped like an assertion, the clock is inside its window, and it
- * is scoped to the service it was checked against*, and nothing more — it does
- * not mean it was signed by anyone at all. Until the remaining work lands, a
- * caller must not read the success branch as permission to spend the assertion.
- * The README says the same thing where a reader will meet it first.
+ * **Status: incomplete.** The structural phase, the validity window, the
+ * audience, the attributes the calling service requires and the identity
+ * cross-check are here; signature integrity is not. So a `valid: true` result
+ * from this build means *this document is shaped like an assertion, the clock
+ * is inside its window, it is scoped to the service it was checked against, it
+ * carries what that service asked for, and it says one thing about who the
+ * operator is* — and nothing more. It does not mean it was signed by anyone at
+ * all. Until the remaining work lands, a caller must not read the success
+ * branch as permission to spend the assertion. The README says the same thing
+ * where a reader will meet it first.
  *
  * ## What it is handed
  *
@@ -29,8 +31,9 @@
  *
  * The structural phase asks whether there is an assertion here at all:
  * parseable, an assertion element at the root, the attributes §4.1.6.2.2 makes
- * mandatory, and exactly one each of the elements it requires — the issuer, the
- * subject, and the conditions carrying the validity window. It reports one
+ * mandatory, exactly one each of the elements it requires — the issuer, the
+ * subject, and the conditions carrying the validity window — and one operator
+ * identifier in the subject. It reports one
  * failure and stops, in both directions — it does not accumulate structural
  * failures, and it does not let the semantic phase run. Neither would be worth
  * anything: a document that failed to parse has no audience to compare, no
@@ -44,14 +47,17 @@
  * The semantic phase runs to completion and reports every failure it finds,
  * because by then the failures are independent: an assertion can be out of
  * date *and* wrongly scoped, and a caller deciding between refreshing and
- * re-scoping needs both. Today it holds two checks, the validity window and the
- * audience.
+ * re-scoping needs both. Today it holds four: the validity window, the
+ * audience, the attributes the service requires, and the operator's identity
+ * held against itself.
  *
  * ## The service is an argument too
  *
- * The audience is checked against a policy the caller supplies, because §3.1.1
- * makes "does this service accept this assertion" a property of the service and
- * of the organisation's own policies rather than of the RVE-1.b transaction.
+ * The audience, the attributes an assertion must carry and the authentication
+ * level it must attest are all checked against a policy the caller supplies,
+ * because §3.1.1 and §4.2.5.3.1 between them make "does this service accept
+ * this assertion" a property of the service and of the organisation's own
+ * policies rather than of the RVE-1.b transaction.
  * `src/service-policy.ts` holds the type and the reasoning; here it is one more
  * required argument, for the same reason the clock is one: there is no
  * validating an assertion without saying when, and against what, it is about to
@@ -83,10 +89,13 @@
 import { DOMParser, onErrorStopParsing } from '@xmldom/xmldom';
 import type { Document, Element } from '@xmldom/xmldom';
 
+import { ASSERTION_ATTRIBUTES, readAssertionAttributes } from './assertion-attributes.js';
+import type { AssertionAttributes } from './assertion-attributes.js';
 import { SAML_ASSERTION_NAMESPACE } from './namespaces.js';
 import { REGIONAL_ERROR_CODES, type RegionalErrorCode } from './regional-error-codes.js';
 import { audienceMatches, type ServicePolicy } from './service-policy.js';
 import { ValidationInputError } from './types.js';
+import { attribute, onlySamlChild, samlChildren, text } from './saml-dom.js';
 
 /** The local name of the element an assertion is — §4.1.6.2.2. */
 const ASSERTION_ELEMENT = 'Assertion';
@@ -99,6 +108,12 @@ const AUDIENCE_RESTRICTION_ELEMENT = 'AudienceRestriction';
 
 /** The local name of the element naming one such service — §4.1.6.2.2. */
 const AUDIENCE_ELEMENT = 'Audience';
+
+/** The element §4.1.6.2.2 puts the operator's identity in. */
+const SUBJECT_ELEMENT = 'Subject';
+
+/** The element inside the subject that carries the operator's tax code. */
+const NAME_ID_ELEMENT = 'NameID';
 
 /** SAML 2.0 protocol version, the only value §4.1.6.2.2 permits. */
 const SAML_VERSION = '2.0';
@@ -126,13 +141,21 @@ const SAML_VERSION = '2.0';
  * and the tenant's configuration for this service is what changes. Both are
  * resolved by one re-request, and a caller told only "audience" cannot tell
  * which of its two bugs it has.
+ *
+ * The last three are kept apart for the same reason again. A missing attribute
+ * is answered by a re-request; a missing authentication level escalates out of
+ * the assertion layer entirely, to the session that has to acquire a second
+ * factor; and an identity mismatch is answered by nothing a caller can do.
  */
 export type AssertionFailureCode =
   | 'malformed'
   | 'not-yet-valid'
   | 'expired'
   | 'audience-mismatch'
-  | 'audience-absent';
+  | 'audience-absent'
+  | 'attribute-missing'
+  | 'authentication-level-not-attested'
+  | 'identity-mismatch';
 
 /**
  * One reason an assertion was refused.
@@ -145,7 +168,9 @@ export type AssertionFailureCode =
  * a best match.
  *
  * **The detail never quotes the document.** It is one sentence about what was
- * expected, in constant text. An assertion carries the operator's tax code, and
+ * expected, in constant text — or, for a missing attribute, in the caller's own
+ * words, since the name of an attribute the caller asked for came from the
+ * caller. An assertion carries the operator's tax code, and
  * on some documents it carries a patient identifier; a detail that echoed what
  * it found would put those into whatever logs the failure, including on the
  * refusal paths where nothing has been validated and the document may be
@@ -156,20 +181,65 @@ export interface AssertionFailure {
   readonly code: AssertionFailureCode;
   readonly detail: string;
   readonly regionalErrorCode: RegionalErrorCode;
+
+  /**
+   * Whether asking the same question again is certain to produce the same
+   * answer.
+   *
+   * `true` is a positive claim: no round trip to the IAP, no re-request and no
+   * re-authentication can turn this assertion into a usable one, so a caller
+   * that retries is looping against a third party. `false` is the absence of
+   * that claim — *not established to be unrecoverable* — and not a promise that
+   * a retry will succeed. What to actually do about a failure is the remedy's
+   * to say, and the remedy is a later ticket's.
+   */
+  readonly unrecoverable: boolean;
 }
 
 /**
  * An assertion this library found no fault with.
  *
- * The operator's tax code and the authentication level are the rest of the
- * semantic phase's to report, and it is not written yet — see the module
- * comment. The audiences are read, to check them, and reported by nothing: a
- * caller that wants to know which services an assertion is scoped to is a
- * caching layer, and that is the ticket that will add the field beside the
- * deadline it is actually keyed on.
+ * Reports what a caller needs from an assertion it did not build: who the
+ * region says the operator is, what the assertion is scoped to, how strongly
+ * the operator authenticated, and how long it is worth holding.
  */
 export interface ValidAssertion {
   readonly valid: true;
+
+  /**
+   * The operator's tax code, as the subject's `NameID` carries it — §4.1.6.2.2
+   * makes that the unique identifier of the user the credentials belong to, and
+   * the responsible-party attribute has been checked to agree with it.
+   *
+   * Not validated as a tax code, deliberately: `docs/spec-questions.md` (D-019).
+   * Reported as written, beyond the whitespace an indented document put around
+   * it.
+   */
+  readonly operatorTaxCode: string;
+
+  /**
+   * The services this assertion is scoped to, in document order — the
+   * `Audience` elements of §4.1.6.2.2's optional audience restriction, across
+   * every restriction the assertion carries.
+   *
+   * Empty for §3.1.1's generic assertion, which §4.1.6.2.2 permits and which
+   * the audience check has already decided this service accepts. Reported for
+   * the caching layer, which keys on what an assertion is good for as well as
+   * on how long it is good for.
+   */
+  readonly audiences: readonly string[];
+
+  /**
+   * The authentication level the assertion attests, or `undefined` when it
+   * attests none.
+   *
+   * A string rather than the level the specification names, and deliberately
+   * not narrowed: the excerpt names one level and cannot say the region has not
+   * added another since (`docs/spec-questions.md`, D-007). A received value is
+   * the IAP's to state; refusing an unrecognised one would refuse an assertion
+   * that is stronger than this library knows how to read.
+   */
+  readonly authenticationLevel: string | undefined;
 
   /**
    * The instant at which this assertion stops being worth spending: its
@@ -226,6 +296,10 @@ function refused(detail: string): StructuralRefusal {
     // bytes it was handed are not a recognisable token, which is ERR_00023.
     // The annotation is a best match either way — see {@link AssertionFailure}.
     regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_TOKEN_UNRECOGNISABLE,
+    // Not a claim that a retry would help — see {@link AssertionFailure}. A
+    // caller that mis-sliced a SOAP response fixes its own code; an IAP that
+    // returned nonsense might not the next time.
+    unrecoverable: false,
   };
 
   return { read: false, failure };
@@ -357,37 +431,6 @@ function parse(source: string): Document | undefined {
   }
 }
 
-/** `Node.ELEMENT_NODE`, named rather than written as a bare 1. */
-const ELEMENT_NODE = 1;
-
-/** The direct children of `element` with this SAML local name. */
-function samlChildren(element: Element, localName: string): readonly Element[] {
-  const children: Element[] = [];
-  for (const node of Array.from(element.childNodes)) {
-    if (node.nodeType !== ELEMENT_NODE) {
-      continue;
-    }
-    const child = node as Element;
-    if (child.namespaceURI === SAML_ASSERTION_NAMESPACE && child.localName === localName) {
-      children.push(child);
-    }
-  }
-  return children;
-}
-
-/**
- * The value of `name` on `element`, or `undefined` when it is absent.
- *
- * A blank value counts as absent. An `ID=""` is not an identifier the signature
- * reference can be bound to, and an empty `NotOnOrAfter` is not a time — so
- * treating the two cases alike costs a caller nothing and saves every check
- * downstream from having to ask twice.
- */
-function attribute(element: Element, name: string): string | undefined {
-  const value = element.getAttribute(name);
-  return value === null || value.trim().length === 0 ? undefined : value;
-}
-
 /**
  * The first of `names` that `element` does not carry, or `undefined` when it
  * carries all of them.
@@ -428,9 +471,14 @@ const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as
  * element the audience restrictions hang off. The element rather than the
  * audiences themselves: the window comes off the same element, and reading half
  * of `Conditions` here and half in the phase that uses it would put the
- * document's shape in two places. The attribute statement and the signature
- * join it as the checks that read them arrive; each is added by the ticket that
- * reads it, so the type never carries a field no test reaches.
+ * document's shape in two places. The assertion element joins it for the same
+ * reason, since the attribute statement hangs off that one. The signature joins
+ * them when the check that reads it arrives.
+ *
+ * The subject identifier is read here rather than in the semantic phase because
+ * §4.1.6.2.2 makes the subject carry it and there is no second place to look —
+ * an assertion without one is not an assertion that failed a check, it is a
+ * document that cannot say who it is about.
  */
 interface StructuralRefusal {
   readonly read: false;
@@ -440,7 +488,9 @@ interface StructuralRefusal {
 interface StructureRead {
   readonly read: true;
   readonly window: ValidityWindow;
+  readonly assertion: Element;
   readonly conditions: Element;
+  readonly subjectIdentifier: string;
 }
 
 type StructuralRead = StructureRead | StructuralRefusal;
@@ -531,18 +581,33 @@ function readStructure(assertion: Uint8Array): StructuralRead {
     }
   }
 
-  const [conditions] = samlChildren(element, CONDITIONS_ELEMENT);
-  if (conditions === undefined) {
-    // Unreachable: the loop above established there is exactly one. Written as
-    // a return rather than an assertion so that the compiler's narrowing and
-    // the runtime's behaviour agree without a cast.
-    return refused(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
+  const conditions = onlySamlChild(element, CONDITIONS_ELEMENT);
+  const subject = onlySamlChild(element, SUBJECT_ELEMENT);
+  if (conditions === undefined || subject === undefined) {
+    // Unreachable: the loop above established there is exactly one of each.
+    // Written as a return rather than an assertion so that the compiler's
+    // narrowing and the runtime's behaviour agree without a cast.
+    return refused(
+      `the assertion does not carry exactly one ${SUBJECT_ELEMENT} and ${CONDITIONS_ELEMENT} element.`,
+    );
   }
 
   const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
   if (absentConditionsAttribute !== undefined) {
     return refused(
       `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
+    );
+  }
+
+  const nameId = onlySamlChild(subject, NAME_ID_ELEMENT);
+  const subjectIdentifier = nameId === undefined ? undefined : text(nameId);
+  if (subjectIdentifier === undefined) {
+    // §4.1.6.2.2 makes this the operator's identifier, and it is the only place
+    // the success branch can report one from — so a subject that carries no
+    // identifier, or two, is a document that cannot say who it is about rather
+    // than one that fails a check.
+    return refused(
+      `the assertion's ${SUBJECT_ELEMENT} does not carry exactly one ${NAME_ID_ELEMENT} with a value.`,
     );
   }
 
@@ -563,7 +628,9 @@ function readStructure(assertion: Uint8Array): StructuralRead {
   return {
     read: true,
     window: { notBefore: notBefore.instant, notOnOrAfter: notOnOrAfter.instant },
+    assertion: element,
     conditions,
+    subjectIdentifier,
   };
 }
 
@@ -626,6 +693,8 @@ function checkWindow(
       // ERR_00031 — Appendix A.5, Table 10: NotBefore later than the moment of
       // use. An annotation, as everything here is — see {@link AssertionFailure}.
       regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_NOT_YET_VALID,
+      // A clock moves. So does the instant the window opens at.
+      unrecoverable: false,
     });
   }
 
@@ -638,6 +707,8 @@ function checkWindow(
       // moment of use. Reported for a window that has not closed yet but will
       // close in flight, which is the same refusal arriving earlier.
       regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_EXPIRED,
+      // A fresh assertion is exactly the round trip this does not rule out.
+      unrecoverable: false,
     });
   }
 
@@ -660,6 +731,8 @@ function audienceFailure(code: 'audience-mismatch' | 'audience-absent'): Asserti
         ? 'the assertion names no audience, and this service was declared to refuse a generic assertion.'
         : 'the assertion is scoped to services that do not include the one it was validated against.',
     regionalErrorCode: REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED,
+    // A re-request scoped to this service is the remedy, and it exists.
+    unrecoverable: false,
   };
 }
 
@@ -674,8 +747,28 @@ function audienceFailure(code: 'audience-mismatch' | 'audience-absent'): Asserti
  * satisfied by nobody.
  */
 function restrictionNames(restriction: Element, policy: ServicePolicy): boolean {
-  return samlChildren(restriction, AUDIENCE_ELEMENT).some((audience) =>
-    audienceMatches(policy, audience.textContent ?? ''),
+  return audiencesOf(restriction).some((audience) => audienceMatches(policy, audience));
+}
+
+/**
+ * The services `element` names, in document order.
+ *
+ * One reading of an `Audience` element, shared by the check and by what the
+ * success branch reports, so that a caller cannot be told it is scoped to
+ * something the match did not compare. `text` refuses an element whose content
+ * is other elements, which is how `<Audience><x>http://</x>evil</Audience>`
+ * stops being a URL.
+ */
+function audiencesOf(element: Element): readonly string[] {
+  return samlChildren(element, AUDIENCE_ELEMENT)
+    .map((audience) => text(audience))
+    .filter((audience): audience is string => audience !== undefined);
+}
+
+/** Every service the assertion is scoped to, across every restriction. */
+function audiences(conditions: Element): readonly string[] {
+  return samlChildren(conditions, AUDIENCE_RESTRICTION_ELEMENT).flatMap((restriction) =>
+    audiencesOf(restriction),
   );
 }
 
@@ -702,6 +795,182 @@ function checkAudience(conditions: Element, policy: ServicePolicy): readonly Ass
     : [audienceFailure('audience-mismatch')];
 }
 
+
+/**
+ * The regional code that names a missing attribute best, per attribute.
+ *
+ * No code in Appendix A.5 names an attribute that is absent, so each of these
+ * is the nearest neighbour to a question the region asks differently. The
+ * choice is argued in `docs/spec-questions.md` (D-022); the annotation is a
+ * best match either way, per {@link AssertionFailure}.
+ */
+const ATTRIBUTE_ERROR_CODES: Readonly<Record<string, RegionalErrorCode>> = {
+  [ASSERTION_ATTRIBUTES.REQUEST_CONTEXT]: REGIONAL_ERROR_CODES.REQUEST_CONTEXT_NOT_PERMITTED,
+  [ASSERTION_ATTRIBUTES.ROLE]: REGIONAL_ERROR_CODES.ROLE_MISSING_OR_INVALID_IN_DIRECTORY,
+  [ASSERTION_ATTRIBUTES.USER_CLIENT_AUTHENTICATION]:
+    REGIONAL_ERROR_CODES.USER_CLIENT_AUTHENTICATION_NOT_PERMITTED,
+  [ASSERTION_ATTRIBUTES.APPLICATION_ID]: REGIONAL_ERROR_CODES.APPLICATION_ID_NOT_PERMITTED,
+};
+
+/**
+ * The attribute names an assertion must carry for this call: the policy's, and
+ * the responsible party whether the policy asked for it or not.
+ *
+ * De-duplicated, in the order they were asked for, with the responsible party
+ * first — a policy naming it as well should not produce the failure twice.
+ */
+function requiredAttributes(policy: ServicePolicy): readonly string[] {
+  return [...new Set([ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, ...policy.requiredAttributes])];
+}
+
+/**
+ * Every attribute the service required that the assertion does not carry.
+ *
+ * Presence, not value. Whether `R.1.1` is a role that may reach this service is
+ * a decision the X-Service Provider makes against boundary tables the region
+ * holds and this library does not sync — the same reason the policy carries no
+ * permitted contexts and no permitted roles (D-017).
+ */
+function checkAttributes(
+  attributes: AssertionAttributes,
+  policy: ServicePolicy,
+): readonly AssertionFailure[] {
+  return requiredAttributes(policy)
+    .filter((name) => !attributes.has(name))
+    .map((name) => ({
+      code: 'attribute-missing' as const,
+      // The name came from the policy, which came from the caller — so naming
+      // it quotes the caller and not the document. See {@link AssertionFailure}.
+      detail: `the assertion carries no ${name} attribute with a value, and the service requires one.`,
+      regionalErrorCode:
+        ATTRIBUTE_ERROR_CODES[name] ?? REGIONAL_ERROR_CODES.REQUEST_PARAMETERS_AGAINST_POLICY,
+      unrecoverable: false,
+    }));
+}
+
+/**
+ * The authentication level the assertion attests, and every way it does not
+ * attest the one required.
+ *
+ * The regional code differs between the two ways of failing, because they are
+ * not the same claim. A service demanding a level is what Appendix A.5, Table
+ * 12's ERR_00065 is for; an assertion contradicting itself is not, and saying
+ * it was would put a demand into the support conversation that nothing made.
+ * See `docs/spec-questions.md` (D-022, D-023).
+ */
+function checkAuthenticationLevel(
+  attributes: AssertionAttributes,
+  policy: ServicePolicy,
+): {
+  readonly failures: readonly AssertionFailure[];
+  readonly authenticationLevel: string | undefined;
+} {
+  const levels = attributes.get(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL) ?? [];
+  const authenticationLevel = levels.length === 1 ? levels[0] : undefined;
+
+  if (levels.length > 1) {
+    // Two answers to a question with one answer, whatever the policy asked for
+    // — an assertion contradicting itself about how strongly the operator
+    // authenticated attests nothing, and there is no service that is safe for.
+    // Argued in `docs/spec-questions.md` (D-023).
+    return {
+      authenticationLevel,
+      failures: [
+        {
+          code: 'authentication-level-not-attested',
+          detail: 'the assertion attests more than one authentication level, so it attests none.',
+          regionalErrorCode: REGIONAL_ERROR_CODES.REQUEST_PARAMETERS_AGAINST_POLICY,
+          unrecoverable: false,
+        },
+      ],
+    };
+  }
+
+  if (
+    policy.requiredAuthenticationLevel !== undefined &&
+    authenticationLevel !== policy.requiredAuthenticationLevel
+  ) {
+    return {
+      authenticationLevel,
+      failures: [
+        {
+          code: 'authentication-level-not-attested',
+          detail:
+            "the service requires an authentication level the assertion does not attest. The operator must authenticate again with a second factor, which is the session's work and not a re-request.",
+          regionalErrorCode: REGIONAL_ERROR_CODES.TWO_FACTOR_AUTHENTICATION_REQUIRED,
+          // The operator can authenticate again with a second factor. That is
+          // the session layer's work rather than a re-request, but it is work
+          // that exists.
+          unrecoverable: false,
+        },
+      ],
+    };
+  }
+
+  return { authenticationLevel, failures: [] };
+}
+
+/**
+ * The two identities in an assertion, compared as one identity written twice.
+ *
+ * Compared with case folded away, and nothing else: the region writes a Codice
+ * Fiscale in upper case, and folding case cannot make two different tax codes
+ * equal — so it removes a way of refusing a correct assertion without weakening
+ * the check. Argued in `docs/spec-questions.md` (D-020). Locale-independent
+ * deliberately: `toUpperCase` rather than `toLocaleUpperCase`, so that the
+ * machine's locale is not part of who the operator is.
+ */
+function sameIdentity(one: string, other: string): boolean {
+  return one.toUpperCase() === other.toUpperCase();
+}
+
+/**
+ * Checks the operator's identity against itself.
+ *
+ * §4.1.6.2.2 has RVE-1.b's IAP derive both the subject's `NameID` and the
+ * `ResponsibleParty` attribute from one query for one operator, so the two
+ * carry the same tax code by construction. Two different values means the IAP
+ * resolved two different people for one request, and nothing downstream can
+ * tell which of them the regional audit trail should name.
+ *
+ * *Every* value is held against the subject, not the first: an assertion naming
+ * a second responsible party beside the right one is the shape this check
+ * exists to catch, and a check that stopped at the first value is a check that
+ * second value could hide behind.
+ */
+function checkIdentity(
+  subjectIdentifier: string,
+  attributes: AssertionAttributes,
+): readonly AssertionFailure[] {
+  const responsibleParties = attributes.get(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY);
+
+  // Absent is the missing-attribute failure and not this one. A mismatch
+  // reported beside it would name a disagreement nothing had.
+  if (responsibleParties === undefined) {
+    return [];
+  }
+
+  if (responsibleParties.every((party) => sameIdentity(party, subjectIdentifier))) {
+    return [];
+  }
+
+  return [
+    {
+      code: 'identity-mismatch',
+      detail: `the assertion's ${SUBJECT_ELEMENT} and its ${ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY} attribute do not name one operator.`,
+      // Appendix A.5, Table 12's ERR_00059 is the region's code for this
+      // disagreement about this value, reached by comparing against the AULSS's
+      // own directory rather than by comparing the assertion against itself.
+      // See `docs/spec-questions.md` (D-022).
+      regionalErrorCode: REGIONAL_ERROR_CODES.RESPONSIBLE_PARTY_FISCAL_CODE_MISMATCH,
+      // Asking the same IAP the same question returns the same two answers, so
+      // a retry is a loop against a third party. Someone has to fix the
+      // directory the IAP is reading, and no round trip from here does that.
+      unrecoverable: true,
+    },
+  ];
+}
+
 /**
  * Validates the identity assertion in `assertion`, as the exact bytes the
  * Identity and Assertion Provider returned.
@@ -725,10 +994,10 @@ function checkAudience(conditions: Element, policy: ServicePolicy): readonly Ass
  * confidential services make "is this assertion acceptable" a question that
  * cannot be asked without naming the service asking it.
  *
- * **Incomplete — see the module comment.** The structure, the validity window
- * and the audience are checked; the required attributes, the identity
- * cross-check and the signature are not, so a valid result does not establish
- * that this assertion was signed by anyone.
+ * **Incomplete — see the module comment.** The structure, the validity window,
+ * the audience, the attributes the service requires and the operator's identity
+ * are checked; the signature is not, so a valid result does not establish that
+ * this assertion was signed by anyone.
  */
 export function validateAssertion(
   assertion: Uint8Array,
@@ -743,12 +1012,30 @@ export function validateAssertion(
   }
 
   // The semantic phase: every check runs, and every failure is reported. The
-  // remaining checks join the list here as they are written.
+  // signature check joins the list here when it is written.
+  const attributes = readAssertionAttributes(structure.assertion);
   const { failures: windowFailures, usableUntil } = checkWindow(structure.window, time);
-  const [first, ...rest] = [...windowFailures, ...checkAudience(structure.conditions, policy)];
+  const { failures: levelFailures, authenticationLevel } = checkAuthenticationLevel(
+    attributes,
+    policy,
+  );
+
+  const [first, ...rest] = [
+    ...windowFailures,
+    ...checkAudience(structure.conditions, policy),
+    ...checkAttributes(attributes, policy),
+    ...levelFailures,
+    ...checkIdentity(structure.subjectIdentifier, attributes),
+  ];
   if (first !== undefined) {
     return { valid: false, failures: [first, ...rest] };
   }
 
-  return { valid: true, usableUntil };
+  return {
+    valid: true,
+    operatorTaxCode: structure.subjectIdentifier,
+    audiences: audiences(structure.conditions),
+    authenticationLevel,
+    usableUntil,
+  };
 }

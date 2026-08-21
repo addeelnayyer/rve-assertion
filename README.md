@@ -10,9 +10,9 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator has its structural phase, its validity-window check and its audience
-> check; the rest of its semantic phase — required attributes, identity
-> cross-check, signature integrity — is not written yet. **Do not spend an
+> validator has its structural phase, its validity-window check, its audience
+> check, the attributes the calling service requires and the identity
+> cross-check; signature integrity is not written yet. **Do not spend an
 > assertion on the strength of `validateAssertion` returning valid in this
 > build**: it does not yet establish that the assertion was signed by anyone.
 > See [Validating an assertion](#validating-an-assertion).
@@ -93,15 +93,19 @@ returns a discriminated result.
 
 ```ts
 import {
+  ASSERTION_ATTRIBUTES,
   RECOMMENDED_CLOCK_SKEW_MS,
   RECOMMENDED_FLIGHT_TIME_MS,
   servicePolicy,
+  TWO_FACTOR_AUTHENTICATION_LEVEL,
   validateAssertion,
 } from 'rve-assertion';
 
 const registry = servicePolicy({
   audience: 'https://fser.regione.veneto.it/Registry',
   refusesGenericAssertions: true,
+  requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE, ASSERTION_ATTRIBUTES.REQUEST_CONTEXT],
+  requiredAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
 });
 
 const result = validateAssertion(
@@ -114,10 +118,11 @@ const result = validateAssertion(
   registry,
 );
 if (result.valid) {
+  call(result.operatorTaxCode, result.audiences, result.authenticationLevel);
   cache.set(assertionBytes, { evictAt: result.usableUntil });
 } else {
   for (const failure of result.failures) {
-    log.warn(failure.code, failure.detail, failure.regionalErrorCode);
+    log.warn(failure.code, failure.detail, failure.regionalErrorCode, failure.unrecoverable);
   }
 }
 ```
@@ -134,30 +139,65 @@ transport concern, and transport is a layer this library does not own. A caller
 hands over the sub-document it already located; a whole response fails the root
 element check, and the failure says so.
 
+### The identity cross-check
+
+§4.1.6.2.2 has RVE-1.b's IAP derive both the subject's `NameID` and the
+`ResponsibleParty` attribute from one directory query for one operator, so the
+two carry the same tax code by construction. The validator holds them against
+each other. Two different values means the IAP resolved two different people for
+one request, and nothing downstream can tell which of them the regional audit
+trail should name — so it is refused, and the failure is marked
+`unrecoverable`: asking the same IAP the same question returns the same two
+answers, and retrying is a loop against a third party.
+
+Every value of the attribute is held against the subject, not the first, so an
+assertion naming a second responsible party beside the right one is caught
+rather than read as naming whichever a reader reaches first. `ResponsibleParty`
+is required whatever the policy asks for, because an assertion that omits it is
+one the cross-check cannot be run against (`D-021`).
+
+The tax code's **format is not validated**, on either side (`D-019`). The IAP is
+the authority on the value, a format rule this excerpt does not state would
+refuse assertions a regional service accepts, and a well-formed tax code is not
+a real one anyway. The comparison folds case and nothing else (`D-020`).
+
+### What a result carries
+
 The result is a union rather than a boolean, so the compiler makes the caller
-handle the refusal. On the failure branch, `failures` is typed non-empty — an
-invalid result with nothing to show for it cannot be constructed. Each failure
-carries this library's own `code`, a human-readable `detail`, and the regional
-error code as `regionalErrorCode`. The regional code is an **annotation, not the
-failure's identity**: it exists so a local diagnosis and an IAP's report can be
-discussed in the same words, and `code` is what a caller switches on. Details
-are constant text and never quote the document — an assertion carries the
-operator's tax code, and a detail echoing what it found would put that into
-whatever logs the failure.
+handle the refusal. On the success branch it reports the `operatorTaxCode`, the
+`audiences` the assertion is scoped to, the `authenticationLevel` it attests,
+and the `usableUntil` deadline a caching layer evicts on — one call, and
+everything a caller needs from an assertion it did not build.
+
+On the failure branch, `failures` is typed non-empty — an invalid result with
+nothing to show for it cannot be constructed. Each failure carries this
+library's own `code`, a human-readable `detail`, the regional error code as
+`regionalErrorCode`, and `unrecoverable`. The regional code is an **annotation,
+not the failure's identity**: it exists so a local diagnosis and an IAP's report
+can be discussed in the same words, and `code` is what a caller switches on.
+`unrecoverable: true` is a positive claim that no round trip can change the
+answer — the identity mismatch is the one failure that carries it today; `false`
+is the absence of that claim rather than a promise that a retry will work. Details are constant text and never quote the document — an assertion
+carries the operator's tax code, and a detail echoing what it found would put
+that into whatever logs the failure.
 
 **Two phases, and the first one stops.** The structural phase asks whether there
 is an assertion here at all: parseable, an assertion element at the root, the
-attributes §4.1.6.2.2 makes mandatory, and exactly one each of the elements it
+attributes §4.1.6.2.2 makes mandatory, exactly one each of the elements it
 requires — the issuer, the subject, and the conditions carrying the validity
-window. The signature is mandatory too and is checked elsewhere, because its
+window — and one operator identifier in the subject. The signature is mandatory
+too and is checked elsewhere, because its
 absence and its being malformed are different regional errors and this phase has
 one code to report. It reports **one** failure and runs nothing further, in
 both directions — it does not accumulate structural failures, and it does not
 let the semantic phase run. Unparseable bytes have no audience to compare and no
 signature to bind, so a list of later failures would report things missing only
 because the document is. The semantic phase is the one that runs to completion
-and reports every reason. It checks the validity window and the audience today;
-the rest arrives with the tickets that give it something to check.
+and reports every reason — every missing attribute, not the first, so that a
+caller does not fix one, spend a round trip against a third-party IAP, and
+discover the next. It checks the validity window, the audience, the attributes
+the service requires and the operator's identity today; the signature arrives
+with the ticket that gives it something to check.
 
 ### The validity window, and the time model around it
 
@@ -250,6 +290,23 @@ the caller does not say, `BASELINE_SERVICE_POLICY` fills in:
   and a local *yes* against a remote *no* is worse than no local check —
   `D-016`.
 
+`requiredAttributes` names the attributes the service will not act without, by
+the wire names §4.1.6.2.2 gives them — `ASSERTION_ATTRIBUTES` has the ones it
+defines, so a policy need not retype an irregular casing that would silently
+mean *never present*. The list is open: §4.2.5.2 says regional projects may
+provide for further parameters, so a policy may name an attribute this excerpt
+never mentions. The check is presence, not value — whether `R.1.1` is a role
+that may reach this service is the X-Service Provider's decision against
+information the region holds and this library does not.
+
+`requiredAuthenticationLevel` is separate, and its failure has its own code,
+because its remedy is unlike any other: the operator must authenticate again
+with a second factor, which is the session layer's work rather than a
+re-request this library's caller can make. An assertion attesting *two*
+different levels is refused whatever the policy asked for, since it contradicts
+itself about how strongly the operator authenticated and there is no reading of
+it that is safe (`D-023`).
+
 An assertion naming several services is valid if one of them is this one, and an
 assertion carrying two `AudienceRestriction` elements must satisfy both, which
 is SAML 2.0 core's reading of an element §4.1.6.2.2 describes only in the
@@ -267,7 +324,14 @@ holds, which this library cannot see and cannot be told about when they change.
 A stale client-side copy fails closed and is fixed by a redeploy. The audience
 is the exception because the caller is the party that asked for it — checking it
 is confirming its own request was honoured, not re-deciding an entitlement.
-`D-017` has the argument and the cost.
+`D-017` has the argument and the cost. `requiredAttributes` is not that copy
+either: it asks whether an attribute is there, never which value would be
+acceptable.
+
+The regional code beside a failure is the region's nearest, not its exact one —
+Appendix A.5 names outcomes the region reaches against information this library
+does not hold, so each annotation is a best match, and `D-022` says which
+neighbours were chosen and why.
 
 ## Install and test
 

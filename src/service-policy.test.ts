@@ -30,11 +30,17 @@ describe('servicePolicy — the baseline', () => {
     // A deliberate omission, not an oversight: the request context, the role
     // and the ApplicationID are checked by the IAP and by the X-Service
     // Provider against boundary tables this library cannot see, so a
-    // client-side copy of them would be a second, staler answer. D-014.
+    // client-side copy of them would be a second, staler answer. D-017.
+    //
+    // `requiredAttributes` is not that copy: it asks whether an attribute is
+    // there, never which value would be acceptable, so a permitted-roles list
+    // cannot be smuggled through it.
     expect(Object.keys(servicePolicy({ audience: AUDIENCE })).sort()).toEqual([
       'audience',
       'audienceMatching',
       'refusesGenericAssertions',
+      'requiredAttributes',
+      'requiredAuthenticationLevel',
     ]);
   });
 

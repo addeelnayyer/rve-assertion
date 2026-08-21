@@ -32,6 +32,7 @@
  * `docs/spec-questions.md` (D-017).
  */
 
+import { TWO_FACTOR_AUTHENTICATION_LEVEL, type AuthenticationLevel } from './request.js';
 import { ValidationInputError } from './types.js';
 import { isAbsoluteUri } from './uri.js';
 
@@ -74,6 +75,33 @@ export interface ServicePolicyInput {
 
   /** How to compare. Omit for {@link BASELINE_SERVICE_POLICY}'s `exact`. */
   readonly audienceMatching?: AudienceMatching;
+
+  /**
+   * The attributes this service will not act without, by the name §4.1.6.2.2
+   * gives each one — `ASSERTION_ATTRIBUTES` names the ones it defines.
+   *
+   * Open, not a closed vocabulary: §4.2.5.2 says regional projects may provide
+   * for further request parameters and defers their definition to a transaction
+   * this excerpt does not contain, so a policy may name an attribute this
+   * library has never heard of and the check still means what it says.
+   *
+   * Presence, not value — for the reason this policy carries no permitted
+   * contexts and no permitted roles (D-017). The responsible party is required
+   * whether or not it is named here; see `docs/spec-questions.md` (D-021).
+   */
+  readonly requiredAttributes?: readonly string[];
+
+  /**
+   * The authentication level this service requires the operator to have reached
+   * — §4.1.6.2.2's `authLevel`.
+   *
+   * Omit it for a service that accepts an operator authenticated in the
+   * ordinary way. Typed as the level the specification attests rather than as a
+   * string, for the reason `docs/spec-questions.md` (D-007) gives: a required
+   * level is a value the caller chooses, and a URN no regional document backs
+   * is a requirement no assertion could ever satisfy.
+   */
+  readonly requiredAuthenticationLevel?: AuthenticationLevel;
 }
 
 /**
@@ -95,6 +123,12 @@ export interface ServicePolicy {
 
   /** How {@link audienceMatches} compares. */
   readonly audienceMatching: AudienceMatching;
+
+  /** The attributes the assertion must carry. See {@link ServicePolicyInput}. */
+  readonly requiredAttributes: readonly string[];
+
+  /** The level the assertion must attest, or `undefined` for any. */
+  readonly requiredAuthenticationLevel: AuthenticationLevel | undefined;
 }
 
 /**
@@ -122,6 +156,11 @@ export interface ServicePolicy {
 export const BASELINE_SERVICE_POLICY = {
   refusesGenericAssertions: false,
   audienceMatching: 'exact',
+  // Nothing beyond what the library requires of every assertion. A baseline
+  // that named attributes would be this library deciding what an organisation's
+  // services need, which is D-017's argument in the other direction.
+  requiredAttributes: [],
+  requiredAuthenticationLevel: undefined,
 } as const satisfies Omit<ServicePolicy, typeof CHECKED | 'audience'>;
 
 /**
@@ -139,13 +178,52 @@ export function servicePolicy(input: ServicePolicyInput): ServicePolicy {
     );
   }
 
+  const requiredAuthenticationLevel = input.requiredAuthenticationLevel;
+  if (
+    requiredAuthenticationLevel !== undefined &&
+    requiredAuthenticationLevel !== TWO_FACTOR_AUTHENTICATION_LEVEL
+  ) {
+    // Re-checked at runtime for the reason the request side re-checks it: a
+    // level typically reaches this constructor from the same tenant
+    // configuration the audience does, where the compiler was never involved.
+    // D-007 argues why an unattested level is refused rather than passed on.
+    throw new ValidationInputError(
+      `${JSON.stringify(requiredAuthenticationLevel)} is not an authentication level §4.1.6.2.2 attests. The only value it names is ${JSON.stringify(TWO_FACTOR_AUTHENTICATION_LEVEL)}.`,
+    );
+  }
+
   return {
     [CHECKED]: true,
     audience: checkedAudience(input.audience),
     refusesGenericAssertions:
       input.refusesGenericAssertions ?? BASELINE_SERVICE_POLICY.refusesGenericAssertions,
     audienceMatching,
+    requiredAttributes: checkedRequiredAttributes(input.requiredAttributes),
+    requiredAuthenticationLevel,
   };
+}
+
+/**
+ * The attribute names `input` asks for, checked and stored without the
+ * whitespace around them. Throws {@link ValidationInputError} otherwise.
+ *
+ * A blank name asks for nothing and would be satisfied by nothing, so it is a
+ * defect in the caller's configuration rather than a requirement no assertion
+ * meets — and finding out at the call site beats finding out as a refusal
+ * against every assertion the deployment ever validates. Trimmed for the reason
+ * the audience is: the stored value is the one the check compares, so an indent
+ * that arrived from configuration must not survive into it.
+ */
+function checkedRequiredAttributes(input: readonly string[] | undefined): readonly string[] {
+  const names = (input ?? BASELINE_SERVICE_POLICY.requiredAttributes).map((name) => name.trim());
+
+  if (names.some((name) => name.length === 0)) {
+    throw new ValidationInputError(
+      'A required attribute name is blank. Each must be the name of an attribute, as §4.1.6.2.2 writes it.',
+    );
+  }
+
+  return names;
 }
 
 /**

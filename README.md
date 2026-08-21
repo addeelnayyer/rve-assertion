@@ -8,9 +8,9 @@ for trusted applications*: an application that authenticates its own operators
 with its own credentials, trusted by the AULSS on the strength of mutual TLS and
 an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
-> **Status: in progress.** The scaffold, the MessageID-to-ID derivation and the
-> regional code vocabulary are in place. The request builder and the assertion
-> validator are being added.
+> **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
+> regional code vocabulary and the request builder are in place. The assertion
+> validator is being added.
 
 ## The regional code vocabulary
 
@@ -33,6 +33,52 @@ request context that the specification's own worked request declares.** The code
 that example carries is not in the code system the same section confines the
 attribute to. The reasoning, and the cost of being wrong about it, are in
 `docs/spec-questions.md` (Q-004).
+
+## Building a request
+
+Two steps, deliberately separate. `rve1bRequest` is a smart constructor: it
+takes the caller's input, checks every invariant a request cannot be built
+without, and throws `RequestInputError` naming the one that failed.
+`buildRve1bRequest` takes the result and serialises it, and has no failure mode
+— the value it is handed cannot exist unchecked.
+
+```ts
+import { buildRve1bRequest, rve1bRequest } from 'rve-assertion';
+
+const bytes = buildRve1bRequest(
+  rve1bRequest({
+    messageId: `urn:uuid:${crypto.randomUUID()}`,
+    recipient: 'https://iap.example-aulss.veneto.it/ws',
+    username: { form: 'plaintext', value: operatorUsername },
+    applicationId: tenant.applicationId,
+    requestContext: 'C.1.1',
+    issueInstant: now,
+    notBefore: now,
+    notOnOrAfter: new Date(now.getTime() + 4 * 60 * 60 * 1000),
+    audiences: ['https://fser.regione.veneto.it/Registry'],
+  }),
+);
+```
+
+The output is bytes rather than a string, because the envelope declares its own
+encoding and a string does not carry one. Handing back a string would move the
+choice of encoding to whatever writes it to the socket, which is where a
+mismatch with the declaration gets introduced.
+
+The window is checked for being a window: `NotOnOrAfter` must be strictly after
+`NotBefore` once both are truncated to whole seconds, since `NotOnOrAfter`
+excludes its own instant. It is *not* checked against the issue instant — the
+specification's own worked request would fail that check, which is `D-005`.
+
+The username has two forms and neither has a field for a password, so no input
+produces a `wsse:Password` element. An encrypted username is the caller's own
+ciphertext: this library does not encrypt.
+
+Three omissions are deliberate and each is written down: no `saml:Issuer`, no
+`saml:Subject`, no `Destination` attribute and no `wsa:ReplyTo`. §4.2.5.2 names
+none of them and its worked request carries none, but the RVE-1.a
+information-content table marks two of them required. Which reading governs
+RVE-1.b is `Q-006`.
 
 ## Install and test
 

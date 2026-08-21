@@ -7,9 +7,29 @@
  * signatures. See README.md for the seams it exposes for each of those.
  */
 
+export {
+  SAML_ASSERTION_NAMESPACE,
+  SAML_PROTOCOL_NAMESPACE,
+  SOAP_ENVELOPE_NAMESPACE,
+  WS_ADDRESSING_NAMESPACE,
+  WS_SECURITY_SECEXT_NAMESPACE,
+} from './namespaces.js';
 export { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
 export type { RegionalErrorCode } from './regional-error-codes.js';
-export { deriveMessageId, deriveRequestId } from './request.js';
+export { buildRve1bRequest } from './request-envelope.js';
+export {
+  deriveMessageId,
+  deriveRequestId,
+  rve1bRequest,
+  RVE_1B_ACTION,
+  TWO_FACTOR_AUTHENTICATION_LEVEL,
+} from './request.js';
+export type {
+  AuthenticationLevel,
+  Rve1bRequest,
+  Rve1bRequestInput,
+  Username,
+} from './request.js';
 export { RequestInputError } from './types.js';
 export {
   applicationIdShape,

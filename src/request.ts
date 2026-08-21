@@ -15,6 +15,7 @@ import {
   type RequestContext,
 } from './request-vocabulary.js';
 import { RequestInputError } from './types.js';
+import { isAbsoluteUri } from './uri.js';
 
 /**
  * Scheme prefix a `wsa:MessageID` carries when it names a UUID (RFC 4122 §3),
@@ -287,21 +288,13 @@ function nonBlank(value: string, what: string): string {
 }
 
 /**
- * Returns `value` if it is an absolute URI.
- *
- * `URL` is the check because it is the parser already present in the runtime
- * and it accepts every scheme, including the `urn:` forms an anonymous
- * WS-Addressing endpoint uses. It rejects relative references, which is the
- * mistake actually worth catching: a path such as `/ws` is neither the absolute
- * IRI WS-Addressing types `wsa:To` as, nor the complete URL §4.2.5.2 asks an
- * `Audience` to carry.
+ * Returns `value` if it is an absolute URI — the rule `src/uri.ts` states, with
+ * the error this side of the library raises.
  */
 function absoluteUri(value: string, what: string): string {
   nonBlank(value, what);
 
-  try {
-    new URL(value);
-  } catch {
+  if (!isAbsoluteUri(value)) {
     throw new RequestInputError(
       `${what} is ${JSON.stringify(value)}, which is not an absolute URI.`,
     );

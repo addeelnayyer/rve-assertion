@@ -56,7 +56,7 @@ import type { Element } from '@xmldom/xmldom';
 import type { AssertionFailure, AssertionWarning } from './assertion.js';
 import { XML_SIGNATURE_NAMESPACE } from './namespaces.js';
 import { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
-import { attribute, childElements, onlyChild, textContent } from './xml.js';
+import { attribute, childElements, onlyChild, text } from './saml-dom.js';
 
 /** The local name of the signature element — §4.1.6.2.2. */
 const SIGNATURE_ELEMENT = 'Signature';
@@ -145,8 +145,13 @@ function absent(detail: string): SignatureOutcome {
       // ERR_00053 names an assertion that is not signed — Appendix A.5,
       // Table 12. The neighbouring signature codes of Table 8 all describe a
       // signature that exists and does not check out, which is the other branch
-      // of this module and not this one.
+      // of this module and not this one. An annotation, as everything here is —
+      // see `docs/spec-questions.md` (D-022).
       regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_NOT_SIGNED,
+      // Not a claim that a retry would help — an IAP that returned an unsigned
+      // assertion may sign the next one. Nor a claim that it would: what to do
+      // about a failure is the remedy's to say.
+      unrecoverable: false,
     },
   };
 }
@@ -158,10 +163,13 @@ function malformed(detail: string): SignatureOutcome {
     failure: {
       code: 'signature-malformed',
       detail,
-      // ERR_00012, "digital signature structured incorrectly" — Appendix A.5,
-      // Table 8. The one code in the excerpt that describes a structural
-      // problem with a signature rather than a cryptographic one.
+      // ERR_00012 — Appendix A.5, Table 8: the one code in the excerpt that
+      // describes a structural problem with a signature rather than a
+      // cryptographic one.
       regionalErrorCode: REGIONAL_ERROR_CODES.SIGNATURE_MALFORMED,
+      // A defect in what this IAP returned this time, which says nothing about
+      // what it returns next time.
+      unrecoverable: false,
     },
   };
 }
@@ -176,8 +184,9 @@ function malformed(detail: string): SignatureOutcome {
  *
  * The regional annotation is `ERR_00012` all the same. The region's vocabulary
  * has no code for signature wrapping, and structurally incorrect is the nearest
- * true statement available — an annotation is a best match by construction, and
- * the library code beside it is what carries the distinction.
+ * true statement available — an annotation is a best match by construction
+ * (`docs/spec-questions.md`, D-022), and the library code beside it is what
+ * carries the distinction.
  */
 function notBound(detail: string): SignatureOutcome {
   return {
@@ -186,6 +195,12 @@ function notBound(detail: string): SignatureOutcome {
       code: 'signature-not-bound',
       detail,
       regionalErrorCode: REGIONAL_ERROR_CODES.SIGNATURE_MALFORMED,
+      // Deliberately not marked unrecoverable, though it is the most alarming
+      // failure here. The claim would be about the transaction rather than
+      // about this document: a fresh request may well return an assertion whose
+      // signature binds. Whether to make one at all, having seen this, is a
+      // decision above this library.
+      unrecoverable: false,
     },
   };
 }
@@ -271,7 +286,7 @@ export function signatureIntegrity(assertion: Element, assertionId: string): Sig
   }
 
   const signatureValue = onlyChild(signature, XML_SIGNATURE_NAMESPACE, 'SignatureValue');
-  if (signatureValue === undefined || textContent(signatureValue) === undefined) {
+  if (signatureValue === undefined || text(signatureValue) === undefined) {
     // Empty counts as absent. A ds:SignatureValue with no base64 in it carries
     // no signature, and accepting the element for its own sake would be exactly
     // the presence check this module exists not to be.
@@ -357,7 +372,7 @@ export function signatureIntegrity(assertion: Element, assertionId: string): Sig
   }
 
   const digestValue = onlyChild(reference, XML_SIGNATURE_NAMESPACE, 'DigestValue');
-  if (digestValue === undefined || textContent(digestValue) === undefined) {
+  if (digestValue === undefined || text(digestValue) === undefined) {
     return malformed(
       "the signature's ds:Reference does not carry exactly one non-empty ds:DigestValue element.",
     );
@@ -391,6 +406,10 @@ export function cryptographicVerification(
           // to an implementation this library did not write, and paraphrasing it
           // would put words in its mouth.
           regionalErrorCode: REGIONAL_ERROR_CODES.SIGNATURE_PUBLIC_KEY_MISMATCH,
+          // Not established to be unrecoverable: a key the caller does not
+          // trust today may be one it trusts after a rotation, and this library
+          // cannot see the trust store to know.
+          unrecoverable: false,
         },
       };
 

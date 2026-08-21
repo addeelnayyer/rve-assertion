@@ -42,6 +42,13 @@ family pediatrician who is signed in. The assertion carries the responsible
 party's identity in its own right, distinctly from the identity of the software
 making the call.
 
+**Operator tax code** — the *Codice Fiscale*, the Italian personal tax
+identifier, and the value the regional infrastructure identifies the responsible
+party by. The IAP derives it from its own directory rather than from anything
+the caller sends, and an assertion carries it in two places that must agree.
+This repository says "operator tax code" in prose and code, and "Codice Fiscale"
+only where it cites the specification's own wording.
+
 **ApplicationID** — the identifier of a specific installation of a specific
 software product, registered with the AULSS and allowlisted by it. It names
 *which deployment is calling*, not which person — the responsible party covers
@@ -59,6 +66,19 @@ to. An assertion carries the audiences it is valid for, and a service that
 considers itself confidential refuses one that names an audience broader than
 itself. An audience is what makes an assertion usable for *this* call rather
 than for calls in general.
+
+**Generic assertion** — an assertion issued without any audience, and therefore
+scoped to no particular service. It is a conforming assertion, and it is the one
+a confidential service is entitled to turn away: such a service may be set up so
+that the only assertion it honours is one whose request named it.
+
+**Service policy** — what a caller knows about the regional service it is about
+to call, and cannot learn from the specification: the audience that names it,
+whether it refuses a generic assertion, the attributes it will not act without,
+and the authentication level it requires. "Service policy" is this library's
+vocabulary, not the specification's; the specification describes the same thing
+as the organisation-level choices and policies that condition access to a
+confidential service.
 
 **Request context** — the declared purpose of the transaction the operator is
 performing, drawn from the regional vocabulary of purposes. The IAP checks the

@@ -14,10 +14,15 @@ export {
   WS_ADDRESSING_NAMESPACE,
   WS_SECURITY_SECEXT_NAMESPACE,
 } from './namespaces.js';
-export { validateAssertion } from './assertion.js';
+export {
+  RECOMMENDED_CLOCK_SKEW_MS,
+  RECOMMENDED_FLIGHT_TIME_MS,
+  validateAssertion,
+} from './assertion.js';
 export type {
   AssertionFailure,
   AssertionFailureCode,
+  AssertionTimeModel,
   AssertionValidation,
   InvalidAssertion,
   ValidAssertion,
@@ -38,7 +43,7 @@ export type {
   Rve1bRequestInput,
   Username,
 } from './request.js';
-export { RequestInputError } from './types.js';
+export { RequestInputError, ValidationInputError } from './types.js';
 export {
   applicationIdShape,
   isRequestContext,

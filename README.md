@@ -10,10 +10,12 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator has its entry point and its structural phase; its semantic phase —
-> validity window, audience, required attributes, identity cross-check,
+> validator has its structural phase and its validity-window check; the rest of
+> its semantic phase — audience, required attributes, identity cross-check,
 > signature integrity — is not written yet. **Do not spend an assertion on the
-> strength of `validateAssertion` returning valid in this build.** See
+> strength of `validateAssertion` returning valid in this build**: it does not
+> yet establish that the assertion is scoped to the service you are about to
+> call, or that it was signed by anyone. See
 > [Validating an assertion](#validating-an-assertion).
 
 ## The regional code vocabulary
@@ -90,10 +92,20 @@ RVE-1.b is `Q-006`.
 and returns a discriminated result.
 
 ```ts
-import { validateAssertion } from 'rve-assertion';
+import {
+  RECOMMENDED_CLOCK_SKEW_MS,
+  RECOMMENDED_FLIGHT_TIME_MS,
+  validateAssertion,
+} from 'rve-assertion';
 
-const result = validateAssertion(assertionBytes);
-if (!result.valid) {
+const result = validateAssertion(assertionBytes, {
+  now: new Date(),
+  clockSkewMs: RECOMMENDED_CLOCK_SKEW_MS,
+  flightTimeMs: RECOMMENDED_FLIGHT_TIME_MS,
+});
+if (result.valid) {
+  cache.set(assertionBytes, { evictAt: result.usableUntil });
+} else {
   for (const failure of result.failures) {
     log.warn(failure.code, failure.detail, failure.regionalErrorCode);
   }
@@ -137,11 +149,61 @@ because the document is. The semantic phase is the one that runs to completion
 and reports every reason; it arrives with the tickets that give it something to
 check.
 
+### The validity window, and the time model around it
+
+The current instant is a **required argument with no default**, so the validator
+can be driven at a chosen moment by a test and by a caller with a better time
+source than this process's clock.
+
+The margin around it is two arguments rather than one, because it was always two
+quantities. **Clock skew** is how far this host's clock may be from the IAP's;
+it is uncertainty about where the bounds are, applies to both of them, and
+*widens* the window. **Estimated flight time** is how long a call carrying the
+assertion takes to reach the service that will check it; it is a real interval
+that elapses *after* this library answers, applies only to `NotOnOrAfter`, and
+*narrows* the window. One combined margin gets the near bound wrong in the
+direction that refuses usable assertions.
+
+`RECOMMENDED_CLOCK_SKEW_MS` (one minute) and `RECOMMENDED_FLIGHT_TIME_MS` (five
+seconds) are exported and never applied silently — a caller taking them has
+written down that it did. **Replace the flight time.** It is a placeholder for
+your own measured high-percentile round trip to the regional services you call;
+nothing in the specification supports the number. Both figures and the reasoning
+are `D-014`.
+
+`NotBefore` is inclusive and `NotOnOrAfter` is exclusive. Expired and not yet
+valid are distinct failure codes carrying distinct regional codes — `ERR_00032`
+and `ERR_00031` — because their remedies differ: one is answered by a fresh
+assertion, the other by fixing a clock. A window too short to reach a service
+through reports both, which is what is true of it.
+
+On success the result carries `usableUntil`: `NotOnOrAfter` less the skew and
+the flight time, which is the deadline a cache layer evicts on. It is
+deliberately earlier than the assertion's own expiry — an assertion held until
+the instant the document expires is one that expires in flight.
+
+The window's **length** is not checked. §3.1.1's four-hour and fifteen-minute
+figures describe what the IAP does under regional policy, not a constraint on
+what a client may accept, and the region has its own code (`ERR_00033`) for a
+window it dislikes, decided by the party that holds the policy. Enforcing the
+figures here would refuse assertions the region considers valid the first time
+an AULSS configured a window between them. The argument is `D-013`.
+
+A bad time model **throws** `ValidationInputError` rather than returning a
+refusal. The assertion is third-party data whose rejection is a control-flow
+outcome; the clock and the margins are the caller's own arguments, and the
+silent alternative is the dangerous one — every comparison against `NaN` is
+false, so a clock that is not a time would accept every assertion put to it.
+
 Three refusals are stricter than the specification demands, each argued in
 `docs/spec-questions.md`: bytes are decoded as UTF-8 strictly rather than
 substituted through (`D-009`), a document a parser would have to recover from is
 refused rather than repaired (`D-010`), and a document type declaration is
-refused outright (`D-011`).
+refused outright (`D-011`). A fourth concerns the window: a `NotBefore` or
+`NotOnOrAfter` carrying no time zone is refused rather than read in an assumed
+one, since two hosts in different zones would otherwise reach different verdicts
+about the same assertion (`D-012`). An explicit `+02:00` offset is accepted —
+it names the same instant a `Z` value would.
 
 ## Install and test
 

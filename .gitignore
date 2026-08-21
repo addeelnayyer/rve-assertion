@@ -2,3 +2,8 @@ node_modules/
 coverage/
 *.tsbuildinfo
 .DS_Store
+
+# The specification excerpt is shared under a no-redistribution condition and
+# must never be committed. Keep a local copy here to work against; cite it by
+# section number only. See the "On the specification" section of README.md.
+docs/*.pdf

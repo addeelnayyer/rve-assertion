@@ -115,6 +115,136 @@ Resolving this question is what would let the check be added.
 
 ---
 
+### Q-003 — The ApplicationID format in the prose is not the format in the worked examples
+
+**Citations.** §4.2.5.2 (the attribute's definition, which gives a
+three-part caret-separated format, and the worked request immediately below it,
+which carries a single bare identifier); §4.2.5.3.1 (the banned-applications
+check, which treats the ApplicationID as one value); §2 (the boundary tables the
+IAP keeps, which key permitted contexts by ApplicationID); Appendix A.5,
+Table 11 (`ERR_00045`).
+
+**The statement.** §4.2.5.2 defines the ApplicationID as three parts joined by
+`^`: the identifier the software product was allocated at labelling, a minor
+release, and an installation identifier. The worked request in the same section
+carries an ApplicationID with no separator in it at all — a single OID-shaped
+token. The prose describes a composite; the example shows an atom. Neither is
+annotated as abbreviating the other.
+
+The ambiguity is not cosmetic, because the value is a lookup key. §2 has the IAP
+hold permitted contexts against an ApplicationID, and §4.2.5.3.1 has it check an
+ApplicationID against a banned list. Whether those tables are keyed by the whole
+composite or by the product identifier alone decides whether banning one
+installation bans a product, and whether a minor release inherits the contexts
+its predecessor was granted. The excerpt does not say.
+
+**What the code does.** Treats the ApplicationID as an opaque string. There is a
+type alias so that signatures name what they take, and no validation whatsoever:
+both the caret-separated form and the bare form build, as does anything else.
+The library transmits the value the caller was allocated.
+
+Alongside it, `applicationIdShape` reports which of the two attested forms a
+value takes, or `unrecognised` for neither. It is exported for a caller checking
+tenant configuration at startup, and **nothing in the library consults it** — no
+request is refused on the strength of it.
+
+**The basis.** The value is allocated by the AULSS, not composed by this
+library. Between a prose rule and an example that breaks it, an enforcement
+either rejects values the region issues or silently blesses a format the region
+may not accept, and the library cannot tell which from the document. Refusing to
+build is the more expensive error of the two: it fails a deployment that would
+otherwise have worked, at a site where nobody can change the allocated value.
+Reporting the shape instead puts the observation where a human can act on it —
+during onboarding, against the registration paperwork — rather than in the
+request path.
+
+**The cost.** A caller that concatenates the three parts wrongly — wrong
+separator, wrong order, a missing installation identifier — gets no complaint
+from the library and finds out from `ERR_00045`, or worse from an authorisation
+that silently matches the wrong boundary-table row. The advisory checker
+narrows that only for a caller that chooses to run it.
+
+**The question as it would be sent.**
+
+> §4.2.5.2 defines the ApplicationID attribute as
+> `[ApplicationID]^[minor_release]^[installazione]`, but the worked request in
+> the same section carries a single identifier with no `^` separators. Which
+> form should a client emit? If the composite form is correct, is the example
+> abbreviated for readability, and are all three parts mandatory or may trailing
+> parts be omitted? Separately, and for us the more important question: are the
+> boundary tables of §2 and the banned-applications list of §4.2.5.3.1 keyed by
+> the full composite value or by the product identifier alone — that is, does
+> banning one installation ban the product, and does a new minor release inherit
+> the contexts granted to the previous one?
+
+---
+
+### Q-004 — §4.2.5.2's worked request declares a request context code that Appendix A.2 does not define
+
+**Citations.** §4.2.5.2 (the RequestContext attribute's definition, which
+confines it to the Appendix A codes, and the worked request below it, which
+carries `C.1.6`); Appendix A.2, Table 5 (the clinical contexts code system,
+whose continuity-of-care rows stop at `C.1.4`); §4.2.5.3.1 (the mandatory check
+of the declared context against the contexts enabled for the ApplicationID);
+Appendix A.5, Table 11 (`ERR_00041`).
+
+**The statement.** §4.2.5.2 states that the RequestContext attribute is
+populated with codes defined in Appendix A. Its own worked request populates it
+with `C.1.6`. Table 5 defines four codes in that group, ending at `C.1.4`; there
+is no `C.1.5` and no `C.1.6` anywhere in the table. The prose and the example
+cannot both be right.
+
+Two readings are available. Either the table was shortened between document
+versions and `C.1.6` is a live code the appendix has lost, or the example was
+written against a draft table and is stale. The excerpt gives no way to tell,
+and the table carries independent signs of drift that make neither reading
+comfortable: `C.4.2` appears under the same macro-activity as `C.5.1` where the
+numbering suggests `C.5.2` was meant, and the administrative group skips `C.6.4`
+altogether.
+
+**What the code does.** Follows the prose and refuses the example. The request
+context is a closed union over Table 5, `isRequestContext` is the guard for
+values arriving as plain strings, and `C.1.6` is not a member — so the one
+context code the specification demonstrates is the one context code this library
+will not build a request from.
+
+`src/vocabulary.test.ts` asserts that rejection by name, so that it reads as
+this decision rather than as an oversight in the table transcription. `C.4.2` is
+reproduced exactly as Table 5 gives it, on the same principle: the table is the
+vocabulary, and an IAP may well have implemented the row literally.
+
+**The basis.** The check that matters happens at the IAP: the declared context
+must be a member of the set the organisation enabled for the calling
+ApplicationID (§4.2.5.3.1). A code absent from the regional code system cannot
+be a member of any such set, so declaring `C.1.6` gets an `ERR_00041` after a
+round trip rather than an assertion. Failing at the call site costs a developer
+one error message; failing at the IAP costs a support ticket in which nobody can
+see why. Where prose and example conflict, this is the direction in which
+following the prose is cheap and following the example is not — the inverse of
+Q-002, where following the prose would have broken against a live service.
+
+**The cost.** If `C.1.6` is in fact live and Table 5 is what is stale, this
+library refuses a context that the region accepts, and a caller entitled to
+declare it has no way through. The refusal is loud and immediate rather than
+silent, so the failure mode is a blocked integration and a fast question, not a
+wrong assertion. Adding the code back is a one-line change once the answer
+arrives.
+
+**The question as it would be sent.**
+
+> §4.2.5.2 states that the RequestContext attribute is populated with the codes
+> defined in Appendix A, but the worked request in that section carries
+> `C.1.6`, which does not appear in Table 5 — the continuity-of-care group ends
+> at `C.1.4`. Is `C.1.6` a valid code that Table 5 is missing, or is the example
+> stale? We currently reject it, so we would be refusing a request the
+> specification's own example makes. Two related points in Table 5, which may
+> share a cause: `C.4.2` is listed under the same macro-activity as `C.5.1`,
+> where the numbering scheme suggests `C.5.2`; and `C.6.4` is absent from an
+> otherwise contiguous administrative group. Are those intentional, and is
+> `C.4.2` the code an IAP will actually accept?
+
+---
+
 ## Decisions where the specification is silent
 
 Not contradictions — points the specification simply does not settle, where the

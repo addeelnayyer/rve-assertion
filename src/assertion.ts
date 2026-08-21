@@ -157,8 +157,8 @@ export interface InvalidAssertion {
 export type AssertionValidation = ValidAssertion | InvalidAssertion;
 
 /** A structural refusal: one failure, always, and always the same code. */
-function malformed(detail: string): AssertionFailure {
-  return {
+function refusal(detail: string): StructuralOutcome {
+  const failure: AssertionFailure = {
     code: 'malformed',
     detail,
     // A document not recognisable as an assertion token is what ERR_00023
@@ -171,6 +171,8 @@ function malformed(detail: string): AssertionFailure {
     // The annotation is a best match either way — see {@link AssertionFailure}.
     regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_TOKEN_UNRECOGNISABLE,
   };
+
+  return { structured: false, failure };
 }
 
 /**
@@ -184,11 +186,6 @@ function malformed(detail: string): AssertionFailure {
 type StructuralOutcome =
   | { readonly structured: false; readonly failure: AssertionFailure }
   | { readonly structured: true; readonly conditions: Element };
-
-/** A structural refusal, as the phase's own return type. */
-function refusal(detail: string): StructuralOutcome {
-  return { structured: false, failure: malformed(detail) };
-}
 
 /**
  * Decodes `assertion` as UTF-8, refusing bytes that are not.
@@ -301,7 +298,7 @@ const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as
  * and extracting one thing here and another there would put half the reading of
  * `Conditions` in the phase that is not about to use it.
  */
-function structure(assertion: Uint8Array): StructuralOutcome {
+function checkStructure(assertion: Uint8Array): StructuralOutcome {
   const source = decodeUtf8(assertion);
   if (source === undefined) {
     return refusal('the assertion bytes are not valid UTF-8.');
@@ -394,10 +391,11 @@ function audienceFailure(code: 'audience-mismatch' | 'audience-absent'): Asserti
  * Whether `restriction` names the service `policy` describes.
  *
  * SAML 2.0 core makes the audiences within one restriction a disjunction, and
- * §4.1.6.2.2 agrees in substance: the sub-elements identify the X-Service
- * Provider actor(s) that may accept the assertion. A restriction naming none —
- * which §4.1.6.2.2 permits, since it allows zero sub-elements — restricts to
- * nobody, so it is satisfied by nobody.
+ * §4.1.6.2.2 agrees in substance: each sub-element names one X-Service Provider
+ * that is entitled to accept the assertion, and there may be several. A
+ * restriction naming none — which §4.1.6.2.2 permits, since it puts no lower
+ * bound on how many sub-elements there are — restricts to nobody, so it is
+ * satisfied by nobody.
  */
 function restrictionNames(restriction: Element, policy: ServicePolicy): boolean {
   return samlChildren(restriction, AUDIENCE_ELEMENT).some((audience) =>
@@ -459,7 +457,7 @@ export function validateAssertion(
   assertion: Uint8Array,
   policy: ServicePolicy,
 ): AssertionValidation {
-  const structural = structure(assertion);
+  const structural = checkStructure(assertion);
   if (!structural.structured) {
     return { valid: false, failures: [structural.failure] };
   }

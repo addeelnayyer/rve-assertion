@@ -1,12 +1,11 @@
 /**
  * The policy of the regional service an assertion is about to be spent on.
  *
- * §3.1.1 is the reason this exists. A highly confidential service — the
- * consultation of clinical documents is the example it gives — may refuse an
- * assertion created generically, and accept only one requested expressly for
- * it. Whether a given X-Service Provider does that is a property of that
- * service and of the organisation's own policies, decided outside the
- * specification and outside this library.
+ * §3.1.1 is the reason this exists. A service holding highly confidential data
+ * — consulting a clinical document is its example — may turn away any assertion
+ * whose request did not name it. Whether a given X-Service Provider does that
+ * is a property of that service and of the organisation's own policies, decided
+ * outside the specification and outside this library.
  *
  * So the policy is **caller-supplied**. The library holds no tenant
  * configuration, and the audience an assertion must name is the URL of the one
@@ -34,6 +33,7 @@
  */
 
 import { ServicePolicyError } from './types.js';
+import { isAbsoluteUri } from './uri.js';
 
 /**
  * How an assertion's audience is compared against the service's own URL.
@@ -66,8 +66,9 @@ export interface ServicePolicyInput {
   readonly audience: string;
 
   /**
-   * Whether this service refuses an assertion that names no audience at all —
-   * the "created in a generic way" case of §3.1.1.
+   * Whether this service refuses an assertion that names no audience at all,
+   * which is the case §3.1.1 describes a confidential service as entitled to
+   * refuse.
    */
   readonly refusesGenericAssertions?: boolean;
 
@@ -139,7 +140,7 @@ export function servicePolicy(input: ServicePolicyInput): ServicePolicy {
 
   return {
     [CHECKED]: true,
-    audience: absoluteUri(input.audience),
+    audience: checkedAudience(input.audience),
     refusesGenericAssertions:
       input.refusesGenericAssertions ?? BASELINE_SERVICE_POLICY.refusesGenericAssertions,
     audienceMatching,
@@ -147,41 +148,31 @@ export function servicePolicy(input: ServicePolicyInput): ServicePolicy {
 }
 
 /**
- * Returns `value` if it is an absolute URI, and throws otherwise.
+ * The audience `input` names, checked and stored without the whitespace around
+ * it. Throws {@link ServicePolicyError} otherwise.
  *
- * The request builder makes the same check on an audience it is about to
- * request, for the same reason: §4.1.6.2.2 has an `Audience` carry the complete
- * url of the service, and a relative reference cannot be compared against one.
+ * Trimmed here rather than at each comparison, so that `policy.audience` is the
+ * value a caller can use — an indent that arrived from tenant configuration
+ * would otherwise be compared away silently and then travel onward into the
+ * re-request the failure calls for. §4.1.6.2.2 asks an `Audience` to name its
+ * service by a URL given in full, which `src/uri.ts` is the shared check for.
  */
-function absoluteUri(value: string): string {
-  if (value.trim().length === 0) {
+function checkedAudience(value: string): string {
+  const audience = value.trim();
+
+  if (audience.length === 0) {
     throw new ServicePolicyError(
-      'The service audience is blank. It must be the complete URL of the service about to be called.',
+      'The service audience is blank. It must be the URL, in full, of the service about to be called.',
     );
   }
 
-  try {
-    new URL(value);
-  } catch {
+  if (!isAbsoluteUri(audience)) {
     throw new ServicePolicyError(
       `The service audience is ${JSON.stringify(value)}, which is not an absolute URI.`,
     );
   }
 
-  return value;
-}
-
-/**
- * Strips the whitespace an XML pretty-printer put around a URI.
- *
- * Not normalisation: `xs:anyURI` collapses whitespace, so a newline and an
- * indent around the value are not part of the value in the first place, and a
- * comparison that treated them as part of it would be comparing the IAP's
- * formatting. Internal whitespace is left alone — it is not legal in a URI, so
- * a value carrying it correctly fails to match.
- */
-function collapsed(value: string): string {
-  return value.trim();
+  return audience;
 }
 
 /**
@@ -204,16 +195,19 @@ function normalised(value: string): string {
  * Whether `candidate`, an `Audience` value read off an assertion, names the
  * service `policy` describes.
  *
- * Exported for a caller inspecting an assertion it is not about to spend — a
- * cache deciding whether the entry it holds is the one this call needs, which
- * is the same question and should not be answered by a second implementation
- * of it.
+ * Module-internal: the validator is the only caller. Not on the public surface,
+ * because nothing outside the library has an `Audience` value in hand to ask
+ * about.
  */
 export function audienceMatches(policy: ServicePolicy, candidate: string): boolean {
-  const wanted = collapsed(policy.audience);
-  const found = collapsed(candidate);
+  // Trimmed, not normalised. A URI cannot contain whitespace, so an indent an
+  // XML formatter put around the value was never part of the value, and a
+  // comparison that kept it would be comparing the IAP's formatting. Internal
+  // whitespace is left alone: a value carrying it is not a URI, and correctly
+  // fails to match. The policy's own audience was trimmed when it was built.
+  const found = candidate.trim();
 
   return policy.audienceMatching === 'exact'
-    ? wanted === found
-    : normalised(wanted) === normalised(found);
+    ? policy.audience === found
+    : normalised(policy.audience) === normalised(found);
 }

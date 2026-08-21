@@ -148,13 +148,15 @@ the tickets that give it something to check.
 
 The policy is **caller-supplied**, and required — there is no validating an
 assertion without saying what it is about to be spent on. §3.1.1 is why: a
-highly confidential service may refuse an assertion created generically and
-accept only one requested expressly for it, and which services do that is
-decided by the organisation, not by the specification.
+service holding highly confidential data may turn away any assertion whose
+request did not name it, and which services do that is decided by the
+organisation, not by the specification.
 
-`servicePolicy` is a smart constructor and throws `ServicePolicyError` on an
-audience that is not an absolute URL. It fills in `BASELINE_SERVICE_POLICY` for
-what the caller does not say:
+`servicePolicy` is a smart constructor and throws `ServicePolicyError` on a
+blank audience, on one that is not an absolute URL, and on a matching mode it
+does not implement. It stores the audience with the whitespace around it
+stripped, so `policy.audience` is a value a scoped re-request can carry. What
+the caller does not say, `BASELINE_SERVICE_POLICY` fills in:
 
 - `refusesGenericAssertions: false` — **an inference, labelled as one.** §4.2.6
   has no information-content table of its own; the nearest is RVE-1.a's, which
@@ -162,8 +164,9 @@ what the caller does not say:
   element a `MAY`. Read across, a generic assertion is conforming. Nothing here
   claims the specification states this for RVE-1.b — `D-012`, and `Q-001` for
   why there is no RVE-1.b table to read.
-- `audienceMatching: 'exact'` — string comparison, after the whitespace
-  stripping `xs:anyURI` mandates. `'normalised'` is available per service and
+- `audienceMatching: 'exact'` — string comparison, after stripping the
+  whitespace an XML formatter put around the value, which a URI could not have
+  contained. `'normalised'` is available per service and
   applies the WHATWG URL form: lowercased scheme and host, default port dropped,
   empty path written as `/`. Path case and a trailing slash stay significant.
   Exact is the default because the X-Service Provider runs its own comparison

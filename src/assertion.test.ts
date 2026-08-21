@@ -322,8 +322,8 @@ describe('validateAssertion — a generic assertion', () => {
   });
 
   it('refuses one when the caller says the service refuses them', () => {
-    // §3.1.1's confidential service: it accepts only an assertion expressly
-    // requested for it.
+    // §3.1.1's confidential service: the only assertion it honours is one
+    // whose request named it.
     const failure = onlyFailure(bytes(assertionXml({ conditions: conditionsWith('') })), CONFIDENTIAL);
 
     expect(failure.code).toBe('audience-absent');

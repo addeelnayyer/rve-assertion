@@ -701,10 +701,10 @@ says which check refused them.
 
 ### D-012 — The baseline service policy accepts a generic assertion, on an inference from RVE-1.a's table
 
-**Citations.** §3.1.1 (the audience-restriction use case: a confidential service
-may refuse an assertion created generically and accept only one requested
-expressly for it); §4.1.6.2.2 (the `AudienceRestriction` element, which the
-assertion *MAY* contain, with zero or more `Audience` sub-elements); §4.1.8,
+**Citations.** §3.1.1 (the audience-restriction use case: a service holding
+highly confidential data may turn away any assertion whose request did not name
+it); §4.1.6.2.2 (the `AudienceRestriction` element, which it makes
+optional, and the `Audience` sub-elements it puts no lower bound on); §4.1.8,
 Table 3 (the RVE-1.a information-content table, which marks the audience
 Optional in the request and Optional in the assertion); §4.2.6, which defines
 the RVE-1.b response by reference to §4.1.6.2.2 and states nothing of its own.
@@ -712,7 +712,8 @@ the RVE-1.b response by reference to §4.1.6.2.2 and states nothing of its own.
 Whether a regional service accepts an assertion that names no audience is not a
 property of RVE-1.b. §3.1.1 makes it a property of the service, decided by the
 organisation's own policies, and gives no list of which services decide which
-way. So the policy is caller-supplied: the audience is the URL of the one
+way — only the worked example of a document consultation that needs a named
+assertion where prescription sending does not. So the policy is caller-supplied: the audience is the URL of the one
 service about to be called, and only the caller knows it.
 
 The library still has to answer for a caller that names a service and says
@@ -739,8 +740,8 @@ that has no audience policy at all.
 
 ### D-013 — Audience matching is exact, with normalisation behind a flag the caller sets
 
-**Citations.** §4.1.6.2.2 (an `Audience` carries the URL of the service, which
-must be identified by specifying the complete url); Appendix A.5, Table 11
+**Citations.** §4.1.6.2.2 (an `Audience` names its service by a URL given in
+full); Appendix A.5, Table 11
 (`ERR_00044`); §4.6 (the assertion is spent, unmodified, on the X-Service
 Provider, which does its own check).
 
@@ -773,8 +774,12 @@ the value on the assertion's side is whatever the IAP wrote, and a validator
 that crashed on it would turn a mismatch into an outage.
 
 Whitespace around the value is stripped in both modes and is not part of the
-choice: `xs:anyURI` collapses whitespace, so an indent an XML pretty-printer
-added was never part of the value.
+choice: a URI cannot contain whitespace, so an indent an XML formatter added was
+never part of the value. Stripping is not `xs:anyURI` collapse, which would also
+fold internal whitespace runs — internal whitespace is left alone, and a value
+carrying it correctly fails to match. On the policy's side the strip happens
+once, where the policy is built, so `policy.audience` is a value the caller can
+put into the re-request the refusal calls for.
 
 The cost of the default is the round trip described above, and the cost of the
 flag is that a caller can turn it on for a service whose real comparison is
@@ -817,10 +822,10 @@ fault can be branched on, which is where that diagnosis belongs.
 
 ### D-015 — Two AudienceRestriction elements are conjoined, not flattened
 
-**Citations.** §4.1.6.2.2 (the `Conditions` element MAY contain an
-`AudienceRestriction`, with zero or more `Audience` sub-elements identifying the
-X-Service Provider actor(s) that may accept the assertion); SAML 2.0 core, which
-the specification profiles.
+**Citations.** §4.1.6.2.2 (the optional `AudienceRestriction` element under
+`Conditions`, whose sub-elements each name one X-Service Provider entitled to
+accept the assertion, and of which there may be several or none); SAML 2.0 core,
+which the specification profiles.
 
 §4.1.6.2.2 describes one `AudienceRestriction` and neither permits nor forbids a
 second, and no worked example carries one. SAML 2.0 core does settle it: each
@@ -830,8 +835,8 @@ restrictions is scoped to their intersection.
 
 The validator implements the SAML reading: every restriction must name the
 service, and one matching audience within a restriction satisfies it. A
-restriction naming no service at all — which §4.1.6.2.2's "zero or more"
-permits — is satisfied by nobody, and is reported as a mismatch rather than as
+restriction naming no service at all — which §4.1.6.2.2 permits, putting no
+lower bound on the sub-elements — is satisfied by nobody, and is reported as a mismatch rather than as
 the generic assertion of §3.1.1, because the document did declare a restriction.
 
 The basis is that the X-Service Provider validates with a SAML stack, so the

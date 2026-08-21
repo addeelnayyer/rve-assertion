@@ -62,9 +62,17 @@ describe('servicePolicy — what it refuses to build', () => {
   );
 
   it('refuses an audience that is not an absolute URI', () => {
-    // §4.1.6.2.2 has an Audience carry the complete url of the service. A path
-    // cannot be compared against one the IAP wrote in full.
+    // §4.1.6.2.2 asks an Audience to name its service by a URL given in full. A
+    // path cannot be compared against one the IAP wrote in full.
     expect(() => servicePolicy({ audience: '/Registry' })).toThrow(ServicePolicyError);
+  });
+
+  it('stores the audience without the whitespace around it', () => {
+    // Trimmed once, where the policy is built, rather than at each comparison:
+    // an indent that arrived from tenant configuration would otherwise be
+    // compared away silently and then travel on into the scoped re-request the
+    // failure calls for.
+    expect(servicePolicy({ audience: `  ${AUDIENCE}\n` }).audience).toBe(AUDIENCE);
   });
 
   it('refuses a matching mode it does not implement', () => {

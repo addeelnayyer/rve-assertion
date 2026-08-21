@@ -62,8 +62,8 @@ than for calls in general.
 
 **Generic assertion** — an assertion issued without any audience, and therefore
 scoped to no particular service. It is a conforming assertion, and it is the one
-a confidential service is entitled to refuse: such a service may be configured
-to accept only an assertion expressly requested for it.
+a confidential service is entitled to turn away: such a service may be set up so
+that the only assertion it honours is one whose request named it.
 
 **Service policy** — what a caller knows about the regional service it is about
 to call, and cannot learn from the specification: the audience that names it,

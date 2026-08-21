@@ -51,14 +51,19 @@
  *
  * The current instant is a required input with no default, and the two margins
  * around it are separate required inputs rather than one combined fudge factor,
- * because they are two different quantities that happen to have the same units.
- * Clock skew is how far this host's clock may be from the IAP's, and it is
- * uncertainty in *where the bounds are*. Estimated flight time is how long a
- * call carrying the assertion takes to reach the X-Service Provider that will
- * check it, and it is a real interval that will have elapsed *after* this
- * library answers. Skew applies to both bounds and widens the window; flight
- * time applies only to the far bound and narrows it. Combining them into one
- * number gets the near bound wrong.
+ * because they are two different quantities that happen to share a unit.
+ *
+ * Clock skew is how far this host's clock may be from the IAP's. It moves both
+ * bounds earlier by the same amount, which is exactly the assumption that this
+ * clock may be that far *behind* the issuer's — the direction in which being
+ * wrong is dangerous, since a clock that is behind is one that thinks a closed
+ * window is still open. Estimated flight time is how long a call carrying the
+ * assertion takes to reach the X-Service Provider that will check it: a real
+ * interval that elapses *after* this library answers, so it moves the far bound
+ * earlier again and the near bound not at all.
+ *
+ * One combined margin cannot do both, and gets the near bound wrong in the
+ * direction that refuses assertions the IAP has only just issued.
  *
  * {@link RECOMMENDED_CLOCK_SKEW_MS} and {@link RECOMMENDED_FLIGHT_TIME_MS} are
  * named rather than applied, so that a caller taking them has written down that
@@ -133,17 +138,19 @@ export interface ValidAssertion {
   readonly valid: true;
 
   /**
-   * The last instant at which spending this assertion is still expected to
-   * arrive inside its window: its `NotOnOrAfter`, less the clock skew and the
-   * estimated flight time the caller supplied.
+   * The instant at which this assertion stops being worth spending: its
+   * `NotOnOrAfter`, less the clock skew and the estimated flight time the
+   * caller supplied.
    *
-   * This is a deadline for a cache to evict on, and it is deliberately earlier
-   * than the assertion's own `NotOnOrAfter` — an assertion held until the
-   * instant the document expires is an assertion that expires in flight. It is
-   * an expiry and not a promise: a caller holding one past this instant will
-   * have it refused by the X-Service Provider, and a caller holding one before
-   * it may still have it refused for any of the reasons this build does not
-   * check yet.
+   * Exclusive, like the `NotOnOrAfter` it is derived from — a caller holding
+   * the assertion *at* this instant is holding it one instant too long, and
+   * this validator would refuse it. It is a deadline for a cache to evict on,
+   * and it is deliberately earlier than the assertion's own expiry, because an
+   * assertion held until the instant the document expires is one that expires
+   * in flight.
+   *
+   * An expiry, not a promise: a caller holding one before this instant may
+   * still have it refused, for any of the reasons this build does not check.
    */
   readonly usableUntil: Date;
 }
@@ -192,16 +199,8 @@ function malformed(detail: string): AssertionFailure {
  * A recommended allowance for the difference between this host's clock and the
  * clock the IAP timestamped the assertion with: one minute.
  *
- * This library's own recommendation, not the region's — the specification gives
- * no skew allowance, though it does name a regional error code for a clock
- * being misaligned (Appendix A.5, Table 12), which says the region expects the
- * condition to occur. One minute is chosen to be larger than the drift of a
- * host that synchronises its clock at all and smaller than any window the
- * specification describes, so that accepting it neither swallows a real expiry
- * nor papers over a host whose clock is actually wrong.
- *
- * Named rather than applied: a caller passes it explicitly, and a caller with a
- * measured figure passes that instead. See `docs/spec-questions.md` (D-014).
+ * This library's own recommendation, not the region's, and one a caller passes
+ * explicitly or replaces with its own — `docs/spec-questions.md` (D-014).
  */
 export const RECOMMENDED_CLOCK_SKEW_MS = 60_000;
 
@@ -209,18 +208,12 @@ export const RECOMMENDED_CLOCK_SKEW_MS = 60_000;
  * A **placeholder** for the time a call carrying the assertion takes to reach
  * the X-Service Provider that will check it: five seconds.
  *
- * This is the one figure in this module that a caller is expected to replace.
- * It stands in for the caller's own measured high-percentile round trip to the
+ * **Replace this.** It is the one figure in this module a caller is expected to
+ * supply for itself: its own measured high-percentile round trip to the
  * regional services it calls — a p99, not a mean, because the calls that expire
- * in flight are by definition the slow ones. Five seconds is a placeholder that
- * is large enough to be visible in a test and small enough not to refuse a
- * usable assertion; it is not a measurement of anything, and nothing in the
- * specification supports it.
- *
- * Too small and an assertion accepted here expires between here and the
- * service, which arrives as a regional error the caller cannot reproduce
- * locally. Too large and short-window assertions — the fifteen-minute kind
- * §3.1.1 describes for document retrieval — are refused while still usable.
+ * in flight are by definition the slow ones. Five seconds is not a measurement
+ * of anything and nothing in the specification supports it; the consequences of
+ * leaving it wrong in either direction are in `docs/spec-questions.md` (D-014).
  */
 export const RECOMMENDED_FLIGHT_TIME_MS = 5_000;
 
@@ -388,16 +381,47 @@ const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
 const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as const;
 
 /**
- * What the structural phase hands the semantic phase: everything the semantic
- * phase reads, and nothing else.
+ * What the structural phase hands the semantic phase, or the one reason it has
+ * nothing to hand it.
  *
- * One member so far, because the validity window is the one semantic check
- * written. The audience list, the attribute statement and the signature join it
- * as the checks that read them arrive; each is added by the ticket that reads
- * it, so the type never carries a field no test can reach.
+ * Tagged on `read` rather than discriminated by which field happens to be
+ * present, so that a call site says which case it is handling in the same way
+ * {@link AssertionValidation} makes its own caller say it.
+ *
+ * The success side carries one field so far, because the validity window is the
+ * one semantic check written. The audience list, the attribute statement and
+ * the signature join it as the checks that read them arrive; each is added by
+ * the ticket that reads it, so the type never carries a field no test reaches.
  */
-interface AssertionStructure {
-  readonly window: ValidityWindow;
+interface StructuralRefusal {
+  readonly read: false;
+  readonly failure: AssertionFailure;
+}
+
+type StructuralRead = { readonly read: true; readonly window: ValidityWindow } | StructuralRefusal;
+
+/** A structural refusal, in the shape the phase returns it. */
+function refused(detail: string): StructuralRefusal {
+  return { read: false, failure: malformed(detail) };
+}
+
+/**
+ * The instant `name` names on `conditions`, or the refusal for its not naming
+ * one.
+ *
+ * The attribute is known to be present and non-blank by the time this is
+ * called, so the only thing left to fail is its lexical form.
+ */
+function conditionsInstant(
+  conditions: Element,
+  name: (typeof REQUIRED_CONDITIONS_ATTRIBUTES)[number],
+): { readonly read: true; readonly instant: Date } | StructuralRefusal {
+  const instant = parseInstant(attribute(conditions, name) ?? '');
+  return instant === undefined
+    ? refused(
+        `the assertion's ${CONDITIONS_ELEMENT} carries a ${name} that is not a UTC dateTime with a time zone.`,
+      )
+    : { read: true, instant };
 }
 
 /**
@@ -415,15 +439,15 @@ interface AssertionStructure {
  * a caller to refresh, and the refresh would return another assertion from the
  * same IAP with the same defect.
  */
-function readStructure(assertion: Uint8Array): AssertionStructure | AssertionFailure {
+function readStructure(assertion: Uint8Array): StructuralRead {
   const source = decodeUtf8(assertion);
   if (source === undefined) {
-    return malformed('the assertion bytes are not valid UTF-8.');
+    return refused('the assertion bytes are not valid UTF-8.');
   }
 
   const document = parse(source);
   if (document === undefined) {
-    return malformed('the assertion bytes are not well-formed XML.');
+    return refused('the assertion bytes are not well-formed XML.');
   }
 
   // A document type declaration is refused rather than ignored. No assertion
@@ -432,7 +456,7 @@ function readStructure(assertion: Uint8Array): AssertionStructure | AssertionFai
   // element tree says what the bytes say is before reading the element tree.
   // Argued in `docs/spec-questions.md` (D-011).
   if (document.doctype !== null) {
-    return malformed('the assertion carries a document type declaration, which is refused.');
+    return refused('the assertion carries a document type declaration, which is refused.');
   }
 
   const element = document.documentElement;
@@ -444,18 +468,18 @@ function readStructure(assertion: Uint8Array): AssertionStructure | AssertionFai
     // The input contract, restated where it is broken: this is the check a
     // caller that handed over a whole SOAP response fails, and the message has
     // to be the one that tells them so.
-    return malformed(
+    return refused(
       "the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller's.",
     );
   }
 
   if (attribute(element, 'Version') !== SAML_VERSION) {
-    return malformed(`the assertion does not declare Version "${SAML_VERSION}".`);
+    return refused(`the assertion does not declare Version "${SAML_VERSION}".`);
   }
 
   const absentAttribute = firstAbsent(element, REQUIRED_ASSERTION_ATTRIBUTES);
   if (absentAttribute !== undefined) {
-    return malformed(`the assertion carries no ${absentAttribute} attribute.`);
+    return refused(`the assertion carries no ${absentAttribute} attribute.`);
   }
 
   // Exactly one of each, not at least one. A second Conditions element would
@@ -463,7 +487,7 @@ function readStructure(assertion: Uint8Array): AssertionStructure | AssertionFai
   // is exactly what a document that wants to be read two ways relies on.
   for (const name of REQUIRED_ASSERTION_ELEMENTS) {
     if (samlChildren(element, name).length !== 1) {
-      return malformed(`the assertion does not carry exactly one ${name} element.`);
+      return refused(`the assertion does not carry exactly one ${name} element.`);
     }
   }
 
@@ -472,41 +496,34 @@ function readStructure(assertion: Uint8Array): AssertionStructure | AssertionFai
     // Unreachable: the loop above established there is exactly one. Written as
     // a return rather than an assertion so that the compiler's narrowing and
     // the runtime's behaviour agree without a cast.
-    return malformed(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
+    return refused(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
   }
 
   const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
   if (absentConditionsAttribute !== undefined) {
-    return malformed(
+    return refused(
       `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
     );
   }
 
-  const window: Partial<Record<(typeof REQUIRED_CONDITIONS_ATTRIBUTES)[number], Date>> = {};
-  for (const name of REQUIRED_CONDITIONS_ATTRIBUTES) {
-    // Non-null: firstAbsent established above that each of these is present.
-    const instant = parseInstant(attribute(conditions, name) ?? '');
-    if (instant === undefined) {
-      return malformed(
-        `the assertion's ${CONDITIONS_ELEMENT} carries a ${name} that is not a UTC dateTime with a time zone.`,
-      );
-    }
-    window[name] = instant;
+  const notBefore = conditionsInstant(conditions, 'NotBefore');
+  if (!notBefore.read) {
+    return notBefore;
   }
-
-  const { NotBefore: notBefore, NotOnOrAfter: notOnOrAfter } = window;
-  if (notBefore === undefined || notOnOrAfter === undefined) {
-    // Unreachable: the loop above filled both or returned. Written as a return
-    // so the compiler's narrowing and the runtime's behaviour agree.
-    return malformed(`the assertion's ${CONDITIONS_ELEMENT} does not declare a validity window.`);
+  const notOnOrAfter = conditionsInstant(conditions, 'NotOnOrAfter');
+  if (!notOnOrAfter.read) {
+    return notOnOrAfter;
   }
 
   // Deliberately not checked here: that NotOnOrAfter is after NotBefore. An
-  // inverted or empty window is not a separate verdict — the semantic phase
-  // reports it as both bounds failing, which is what is true of it, and saying
-  // so needs nothing invented. The region's own code for a window it dislikes
-  // is ERR_00033, and it belongs to the party holding the policy — D-013.
-  return { window: { notBefore, notOnOrAfter } };
+  // inverted or empty window gets no verdict of its own — the semantic phase
+  // reports both bounds failing, which is the whole truth about it and needs
+  // nothing invented. Refusing a window for its *length* is a different
+  // question, and its answer belongs to the party holding the policy — D-013.
+  return {
+    read: true,
+    window: { notBefore: notBefore.instant, notOnOrAfter: notOnOrAfter.instant },
+  };
 }
 
 /**
@@ -522,7 +539,7 @@ function readStructure(assertion: Uint8Array): AssertionStructure | AssertionFai
  */
 function checkTimeModel({ now, clockSkewMs, flightTimeMs }: AssertionTimeModel): void {
   if (Number.isNaN(now.getTime())) {
-    throw new ValidationInputError('the current time is not a valid Date.');
+    throw new ValidationInputError('the current time is not a valid instant.');
   }
   for (const [name, value] of [
     ['clockSkewMs', clockSkewMs],
@@ -546,11 +563,12 @@ function checkTimeModel({ now, clockSkewMs, flightTimeMs }: AssertionTimeModel):
  * the far bound: the assertion has to still be inside its window not now but
  * when it arrives, and the caller may also be reading a clock that is behind.
  *
- * `NotBefore` is inclusive and `NotOnOrAfter` is exclusive, as their names say
- * and as Appendix A.5's Table 10 descriptions of ERR_00031 and ERR_00032
- * confirm. The deadline is therefore the first instant that is too late, and a
- * caller holding the assertion until exactly it is holding it one instant too
- * long.
+ * `NotBefore` is inclusive and `NotOnOrAfter` is exclusive, which is what their
+ * SAML names say and all that settles it — Appendix A.5's Table 10 describes
+ * ERR_00032 as `NotOnOrAfter` being *earlier than* the moment of use, which if
+ * read as the whole rule would make the bound inclusive. The deadline is
+ * therefore the first instant that is too late, and a caller holding the
+ * assertion until exactly it is holding it one instant too long.
  */
 function checkWindow(
   { notBefore, notOnOrAfter }: ValidityWindow,
@@ -615,8 +633,8 @@ export function validateAssertion(
   checkTimeModel(time);
 
   const structure = readStructure(assertion);
-  if ('code' in structure) {
-    return { valid: false, failures: [structure] };
+  if (!structure.read) {
+    return { valid: false, failures: [structure.failure] };
   }
 
   // The semantic phase: every check runs, and every failure is reported. The

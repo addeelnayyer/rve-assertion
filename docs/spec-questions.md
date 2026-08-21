@@ -778,14 +778,27 @@ and takes the two allowances as two separate required arguments rather than one
 combined margin.
 
 They are separate because they are different quantities that happen to share a
-unit. Clock skew is uncertainty about *where the bounds are*, it applies in both
-directions, and it widens the window: an assertion should not be refused as not
-yet valid merely because this host's clock is a minute fast. Estimated flight
-time is a real interval that will have elapsed *after* this library answers, it
-applies only to the far bound, and it narrows the window: an assertion still
-valid now but expiring before the call carrying it lands is one this library
-should refuse rather than let the X-Service Provider refuse. A single margin
-gets the near bound wrong in the direction that refuses usable assertions.
+unit.
+
+Clock skew moves **both** bounds earlier by the same amount, which is the same
+thing as assuming this host's clock may be that far *behind* the issuer's. That
+is the direction in which being wrong is dangerous: a clock that is behind
+believes a window that has closed is still open, and spends an assertion the
+X-Service Provider will refuse. A clock that is ahead makes the opposite
+mistakes, and both of those are cheap — refusing an assertion just issued, or
+refusing one that is genuinely still open a moment before its far bound.
+
+Estimated flight time moves the far bound earlier again, and the near bound not
+at all. It is not uncertainty; it is a real interval that will have elapsed
+*after* this library answers, so an assertion that is valid now but expires
+before the call carrying it lands is one this library should refuse rather than
+let the X-Service Provider refuse.
+
+The net effect is what the code reads: the near bound is `NotBefore` less the
+skew, and the far bound is `NotOnOrAfter` less the skew *and* the flight time.
+A single combined margin cannot produce both, and collapsing them gets the near
+bound wrong in the direction that refuses assertions the IAP has only just
+issued.
 
 The recommended values are exported as named constants and never applied
 silently, so a caller taking them has written down that it did.

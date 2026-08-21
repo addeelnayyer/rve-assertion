@@ -327,6 +327,20 @@ describe('validateAssertion — the validity window', () => {
     expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }).valid).toBe(false);
   });
 
+  it('moves the not-on-or-after bound earlier by the skew alone, with no flight time', () => {
+    // Skew moves both bounds earlier, which is the assumption that this clock
+    // may be behind the issuer's — the direction in which being wrong spends an
+    // assertion whose window has in fact closed.
+    const document = bytes(assertionXml());
+    const skewed = at(
+      { ...EXACT, clockSkewMs: RECOMMENDED_CLOCK_SKEW_MS },
+      Date.parse(NOT_ON_OR_AFTER) - RECOMMENDED_CLOCK_SKEW_MS,
+    );
+
+    expect(validateAssertion(document, skewed).valid).toBe(false);
+    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }).valid).toBe(true);
+  });
+
   it('lets clock skew and flight time together tighten the not-on-or-after bound', () => {
     // The assertion is still inside its window on this clock, and would not be
     // by the time a call carrying it reached the X-Service Provider.

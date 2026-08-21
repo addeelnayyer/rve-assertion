@@ -156,13 +156,16 @@ can be driven at a chosen moment by a test and by a caller with a better time
 source than this process's clock.
 
 The margin around it is two arguments rather than one, because it was always two
-quantities. **Clock skew** is how far this host's clock may be from the IAP's;
-it is uncertainty about where the bounds are, applies to both of them, and
-*widens* the window. **Estimated flight time** is how long a call carrying the
-assertion takes to reach the service that will check it; it is a real interval
-that elapses *after* this library answers, applies only to `NotOnOrAfter`, and
-*narrows* the window. One combined margin gets the near bound wrong in the
-direction that refuses usable assertions.
+quantities. **Clock skew** is how far this host's clock may be from the IAP's,
+and it moves *both* bounds earlier — the same thing as assuming this clock may
+be that far behind the issuer's, which is the direction in which being wrong is
+dangerous. **Estimated flight time** is how long a call carrying the assertion
+takes to reach the service that will check it; it is a real interval that
+elapses *after* this library answers, so it moves the far bound earlier again
+and the near bound not at all. So the near bound is `NotBefore` less the skew,
+and the far bound is `NotOnOrAfter` less the skew and the flight time — one
+combined margin cannot produce both, and gets the near bound wrong in the
+direction that refuses assertions the IAP has only just issued.
 
 `RECOMMENDED_CLOCK_SKEW_MS` (one minute) and `RECOMMENDED_FLIGHT_TIME_MS` (five
 seconds) are exported and never applied silently — a caller taking them has
@@ -171,16 +174,19 @@ your own measured high-percentile round trip to the regional services you call;
 nothing in the specification supports the number. Both figures and the reasoning
 are `D-014`.
 
-`NotBefore` is inclusive and `NotOnOrAfter` is exclusive. Expired and not yet
+`NotBefore` is inclusive and `NotOnOrAfter` is exclusive, as their SAML names
+say. Expired and not yet
 valid are distinct failure codes carrying distinct regional codes — `ERR_00032`
 and `ERR_00031` — because their remedies differ: one is answered by a fresh
 assertion, the other by fixing a clock. A window too short to reach a service
 through reports both, which is what is true of it.
 
 On success the result carries `usableUntil`: `NotOnOrAfter` less the skew and
-the flight time, which is the deadline a cache layer evicts on. It is
-deliberately earlier than the assertion's own expiry — an assertion held until
-the instant the document expires is one that expires in flight.
+the flight time, which is the deadline a cache layer evicts on. It is exclusive,
+like the bound it comes from — holding the assertion *at* that instant is
+holding it one instant too long — and it is deliberately earlier than the
+assertion's own expiry, because an assertion held until the instant the document
+expires is one that expires in flight.
 
 The window's **length** is not checked. §3.1.1's four-hour and fifteen-minute
 figures describe what the IAP does under regional policy, not a constraint on

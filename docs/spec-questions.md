@@ -698,3 +698,84 @@ cheaper and more certain than reasoning about which substitutions are harmless.
 The cost is small and worth naming anyway: an IAP that emitted a `DOCTYPE` for
 some local reason would have its assertions refused as malformed, and the detail
 says which check refused them.
+
+### D-012 — The operator's tax code is compared, never validated
+
+**Citations.** §4.1.6.2.2 (the subject's `NameID`, and the `ResponsibleParty`
+attribute, both of which RVE-1.b populates with the tax code the IAP determined
+by querying its DB or Directory Server); §4.1.8, Table 3, which marks both
+Required and marks the responsible party *Checked*.
+
+Neither section states a format for the value, and nothing in the excerpt names
+a code system for it, gives a length, or offers a check character rule. The
+validator therefore compares the two places the assertion carries the identity
+and reports the value on the success branch, and does not ask whether either is
+a well-formed Codice Fiscale.
+
+The basis is that the question the library can answer is a different question
+from the one a format check answers. §4.1.6.2.2 makes the IAP the authority on
+the value: it derives it from the organisation's directory, and a regionally
+issued temporary or surrogate identifier is exactly the sort of thing that
+directory can hold and this library has never heard of. A format check would
+therefore refuse assertions a regional service accepts, which is the failure
+mode that leaves a paediatrician unable to retrieve a record.
+
+It would also buy nothing. A well-formed tax code is not a real one, and the
+identity risk §4.1.6.2.2 actually creates is the IAP resolving *two* people for
+one request — which a format check passes and a comparison catches. So the
+library checks that the assertion says one thing about who the operator is, and
+leaves believing the thing to the region.
+
+The cost: an assertion carrying an obviously corrupt identifier in both places
+consistently is accepted here and refused by the X-Service Provider, one round
+trip later, in the region's vocabulary rather than this library's.
+
+### D-013 — The two identities are compared with case folded away
+
+**Citations.** §4.1.6.2.2 (`NameID` and `ResponsibleParty`, both the tax code);
+§4.1.6.2.2's worked assertion, which writes the same code in upper case in both
+places.
+
+The comparison folds case — locale-independently — and is otherwise exact. The
+values are already free of the whitespace an indented document puts around them,
+since a comparison that refused an assertion for how it was formatted would be
+refusing formatting rather than identity.
+
+The basis is that folding cannot lose a distinction that matters. A Codice
+Fiscale is defined over letters and digits and the region writes it in upper
+case, and case folding is injective on distinct letters — so two different tax
+codes cannot fold to one, and the only pairs it merges are two spellings of the
+same code. Folding therefore removes a way of refusing a correct assertion and
+gives up no part of the check. Locale-independent, because whose operator this
+is must not depend on the locale of the machine asking.
+
+The cost: an IAP that used case to distinguish two identifiers — which no
+regional document suggests, and which the tax code's own definition forbids —
+would have that distinction ignored here. Contrast D-012: not validating the
+format is a decision to leave a question alone, whereas this one answers a
+question, and the answer is that case is not part of who the operator is.
+
+### D-014 — The responsible party is required whatever the calling service asks
+
+**Citations.** §4.1.8, Table 3, which marks `ResponsibleParty` Required in the
+assertion and Checked by the actor; §4.2.5.3.1 (the checks are the
+organisation's policy); Q-001, the absent pages where a required-attribute
+matrix for the RVE-1.b *assertion* would have been stated.
+
+Attribute presence is otherwise driven entirely by the policy the caller passes,
+because §4.2.5.3.1 makes the checks an actor performs a matter of organisational
+policy and §3.1.1 describes services that refuse an assertion another service
+accepts. `ResponsibleParty` is the one exception: the validator requires it of
+every assertion, whether the calling service named it or not.
+
+The basis is that the library's own identity cross-check reads it. An assertion
+that omits it is not an assertion that failed the cross-check — it is one the
+cross-check cannot be run against, and a validator that quietly skipped the
+check would make omitting the attribute the cheapest way past it. Table 3 marks
+the attribute Required in the nearest surviving matrix, so requiring it is also
+what the document in hand says, as far as it says anything.
+
+The cost is a policy a caller cannot express: a service that genuinely accepts
+an assertion with no responsible party cannot say so here. Nothing in the
+excerpt describes such a service, and Q-001 is the question that would settle
+it.

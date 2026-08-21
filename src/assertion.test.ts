@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { validateAssertion } from './assertion.js';
+import type { ServicePolicy } from './assertion.js';
+import { ASSERTION_ATTRIBUTES } from './assertion-attributes.js';
 import { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
+import { TWO_FACTOR_AUTHENTICATION_LEVEL } from './request.js';
 
 const SAML_ASSERTION_XMLNS = 'urn:oasis:names:tc:SAML:2.0:assertion';
 
@@ -19,12 +22,38 @@ interface AssertionParts {
   readonly issuer?: string;
   readonly subject?: string;
   readonly conditions?: string;
+  readonly statement?: string;
 }
+
+/**
+ * A policy asking for nothing beyond what the library requires of every
+ * assertion. The parameter is not optional, so that a caller states what the
+ * service it is about to call needs rather than inheriting a default nobody
+ * chose — and "nothing" is a thing to state.
+ */
+const NO_REQUIREMENTS: ServicePolicy = {};
 
 const ISSUER = '<saml:Issuer>https://iap.ulssx.veneto.it</saml:Issuer>';
 const SUBJECT = `<saml:Subject><saml:NameID>${PLANTED_IDENTITY}</saml:NameID></saml:Subject>`;
 const CONDITIONS =
   '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z"/>';
+
+/** One `saml:Attribute`, as §4.1.6.2.2's worked assertion writes it. */
+function attributeXml(name: string, value: string): string {
+  return `<saml:Attribute Name="${name}"><saml:AttributeValue>${value}</saml:AttributeValue></saml:Attribute>`;
+}
+
+function statementXml(...attributes: readonly string[]): string {
+  return `<saml:AttributeStatement>${attributes.join('')}</saml:AttributeStatement>`;
+}
+
+/**
+ * The attribute statement of an assertion nobody has anything against: the
+ * responsible party names the same operator the subject does.
+ */
+const STATEMENT = statementXml(
+  attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+);
 
 /**
  * A structurally complete bare assertion element, minus whatever the caller
@@ -33,7 +62,13 @@ const CONDITIONS =
  * segment is an organisation OID, as §4.1.6.2.2 structures an assertion
  * identifier — not the ApplicationID the request tests carry.
  */
-function assertionXml({ attributes, issuer, subject, conditions }: AssertionParts = {}): string {
+function assertionXml({
+  attributes,
+  issuer,
+  subject,
+  conditions,
+  statement,
+}: AssertionParts = {}): string {
   return [
     `<saml:Assertion xmlns:saml="${SAML_ASSERTION_XMLNS}" `,
     attributes ?? `Version="2.0" ID="${ASSERTION_ID}" IssueInstant="2026-08-21T09:00:00Z"`,
@@ -41,6 +76,7 @@ function assertionXml({ attributes, issuer, subject, conditions }: AssertionPart
     issuer ?? ISSUER,
     subject ?? SUBJECT,
     conditions ?? CONDITIONS,
+    statement ?? STATEMENT,
     '</saml:Assertion>',
   ].join('');
 }
@@ -49,19 +85,38 @@ function bytes(xml: string): Uint8Array {
   return new TextEncoder().encode(xml);
 }
 
-/** The single failure a structural refusal carries, or a failing assertion. */
-function onlyFailure(input: Uint8Array) {
-  const result = validateAssertion(input);
+/** The failures an assertion was refused for, or a failing assertion. */
+function failures(input: Uint8Array, policy: ServicePolicy = NO_REQUIREMENTS) {
+  const result = validateAssertion(input, policy);
   if (result.valid) {
     throw new Error('expected the assertion to be refused');
   }
-  expect(result.failures).toHaveLength(1);
-  return result.failures[0];
+  return result.failures;
+}
+
+/** The single failure a structural refusal carries, or a failing assertion. */
+function onlyFailure(input: Uint8Array, policy: ServicePolicy = NO_REQUIREMENTS) {
+  const refused = failures(input, policy);
+  expect(refused).toHaveLength(1);
+  return refused[0];
+}
+
+/** The assertion's success branch, or a failing assertion. */
+function accepted(input: Uint8Array, policy: ServicePolicy = NO_REQUIREMENTS) {
+  const result = validateAssertion(input, policy);
+  if (!result.valid) {
+    throw new Error(
+      `expected the assertion to be accepted; it was refused for ${result.failures
+        .map((failure) => failure.code)
+        .join(', ')}`,
+    );
+  }
+  return result;
 }
 
 describe('validateAssertion — the structural phase', () => {
   it('accepts a structurally complete assertion', () => {
-    expect(validateAssertion(bytes(assertionXml())).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), NO_REQUIREMENTS).valid).toBe(true);
   });
 
   it('reports exactly one failure for bytes that are not XML at all', () => {
@@ -202,8 +257,315 @@ describe('validateAssertion — the byte contract', () => {
     const input = bytes(assertionXml());
     const before = Uint8Array.from(input);
 
-    validateAssertion(input);
+    validateAssertion(input, NO_REQUIREMENTS);
 
     expect(input).toEqual(before);
+  });
+});
+
+describe('validateAssertion — required attributes', () => {
+  it('accepts an assertion carrying every attribute the policy asks for', () => {
+    const assertion = assertionXml({
+      statement: statementXml(
+        attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+        attributeXml(ASSERTION_ATTRIBUTES.ROLE, 'R.1.1'),
+        attributeXml(ASSERTION_ATTRIBUTES.REQUEST_CONTEXT, 'C.1.1'),
+      ),
+    });
+
+    expect(
+      accepted(bytes(assertion), {
+        requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE, ASSERTION_ATTRIBUTES.REQUEST_CONTEXT],
+      }).valid,
+    ).toBe(true);
+  });
+
+  it('refuses an assertion missing an attribute the policy asks for', () => {
+    const failure = onlyFailure(bytes(assertionXml()), {
+      requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE],
+    });
+
+    expect(failure.code).toBe('attribute-missing');
+    expect(failure.detail).toMatch(/Role/);
+  });
+
+  it('lets the policy require an attribute this excerpt does not name', () => {
+    // §4.2.5.2 says regional projects may provide for further parameters and
+    // defers their definition to a transaction this excerpt does not contain,
+    // so the vocabulary a policy draws from is open.
+    const failure = onlyFailure(bytes(assertionXml()), {
+      requiredAttributes: ['codProgettoRegionale'],
+    });
+
+    expect(failure.code).toBe('attribute-missing');
+    expect(failure.detail).toMatch(/codProgettoRegionale/);
+  });
+
+  it('reports one failure per missing attribute rather than stopping at the first', () => {
+    // The semantic phase runs to completion: a caller that fixes one attribute,
+    // retries against a third-party IAP and discovers a second has spent a
+    // round trip to learn what this result already said.
+    const refused = failures(bytes(assertionXml()), {
+      requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE, ASSERTION_ATTRIBUTES.APPLICATION_ID],
+    });
+
+    expect(refused.map((failure) => failure.code)).toEqual([
+      'attribute-missing',
+      'attribute-missing',
+    ]);
+    expect(refused.map((failure) => failure.regionalErrorCode)).toEqual([
+      REGIONAL_ERROR_CODES.ROLE_NOT_PERMITTED,
+      REGIONAL_ERROR_CODES.APPLICATION_ID_NOT_PERMITTED,
+    ]);
+  });
+
+  it('annotates an attribute the region has no code of its own for with the general one', () => {
+    const failure = onlyFailure(bytes(assertionXml()), {
+      requiredAttributes: [ASSERTION_ATTRIBUTES.FACILITY_CODE],
+    });
+
+    expect(failure.regionalErrorCode).toBe(
+      REGIONAL_ERROR_CODES.REQUEST_PARAMETERS_AGAINST_POLICY,
+    );
+  });
+
+  it('does not treat a present-but-empty attribute as satisfying the policy', () => {
+    const assertion = assertionXml({
+      statement: statementXml(
+        attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+        `<saml:Attribute Name="${ASSERTION_ATTRIBUTES.ROLE}"/>`,
+      ),
+    });
+
+    expect(onlyFailure(bytes(assertion), { requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE] }).code).toBe(
+      'attribute-missing',
+    );
+  });
+
+  it('requires the responsible party whatever the policy asks for', () => {
+    // Not policy-driven: the identity cross-check reads this attribute, and an
+    // assertion that omits it is an assertion the cross-check cannot be run
+    // against. See docs/spec-questions.md (D-014).
+    const failure = onlyFailure(bytes(assertionXml({ statement: '' })));
+
+    expect(failure.code).toBe('attribute-missing');
+    expect(failure.detail).toMatch(/ResponsibleParty/);
+  });
+
+  it('marks a missing attribute as something a further round trip could fix', () => {
+    const failure = onlyFailure(bytes(assertionXml()), {
+      requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE],
+    });
+
+    expect(failure.unrecoverable).toBe(false);
+  });
+});
+
+describe('validateAssertion — the authentication level', () => {
+  const REQUIRES_TWO_FACTOR: ServicePolicy = {
+    requiredAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
+  };
+
+  function withLevel(level: string): Uint8Array {
+    return bytes(
+      assertionXml({
+        statement: statementXml(
+          attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+          attributeXml(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL, level),
+        ),
+      }),
+    );
+  }
+
+  it('accepts an assertion attesting the level the policy requires', () => {
+    expect(accepted(withLevel(TWO_FACTOR_AUTHENTICATION_LEVEL), REQUIRES_TWO_FACTOR).valid).toBe(
+      true,
+    );
+  });
+
+  it('accepts an assertion attesting no level when the policy requires none', () => {
+    expect(accepted(bytes(assertionXml())).valid).toBe(true);
+  });
+
+  it('distinguishes a missing authentication level from every other failure', () => {
+    // Its own code, because its remedy is unlike any other: the operator has to
+    // authenticate again with a second factor, which is the session layer's
+    // work and not a re-request this library's caller can make.
+    const failure = onlyFailure(bytes(assertionXml()), REQUIRES_TWO_FACTOR);
+
+    expect(failure.code).toBe('authentication-level-not-attested');
+    expect(failure.regionalErrorCode).toBe(
+      REGIONAL_ERROR_CODES.TWO_FACTOR_AUTHENTICATION_REQUIRED,
+    );
+    expect(failure.unrecoverable).toBe(false);
+  });
+
+  it('refuses an assertion attesting some level other than the one required', () => {
+    expect(onlyFailure(withLevel('urn:rve:authnL1'), REQUIRES_TWO_FACTOR).code).toBe(
+      'authentication-level-not-attested',
+    );
+  });
+
+  it('refuses an assertion attesting the required level twice over, differently', () => {
+    // Two values under one name is two answers, and a check that took the first
+    // would be a check a second value could be hidden behind.
+    const assertion = bytes(
+      assertionXml({
+        statement: statementXml(
+          attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+          `<saml:Attribute Name="${ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL}"><saml:AttributeValue>${TWO_FACTOR_AUTHENTICATION_LEVEL}</saml:AttributeValue><saml:AttributeValue>urn:rve:authnL1</saml:AttributeValue></saml:Attribute>`,
+        ),
+      }),
+    );
+
+    expect(onlyFailure(assertion, REQUIRES_TWO_FACTOR).code).toBe(
+      'authentication-level-not-attested',
+    );
+  });
+
+  it('does not object to a level the policy did not ask for', () => {
+    // The excerpt names one level and cannot say the region has not added
+    // another since. An unrecognised level is reported, not refused.
+    expect(accepted(withLevel('urn:rve:authnL3')).authenticationLevel).toBe('urn:rve:authnL3');
+  });
+});
+
+describe('validateAssertion — the identity cross-check', () => {
+  function withResponsibleParty(...values: readonly string[]): Uint8Array {
+    return bytes(
+      assertionXml({
+        statement: statementXml(
+          ...values.map((value) => attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, value)),
+        ),
+      }),
+    );
+  }
+
+  it('accepts an assertion whose two identities agree', () => {
+    expect(accepted(withResponsibleParty(PLANTED_IDENTITY)).valid).toBe(true);
+  });
+
+  it('refuses an assertion whose responsible party is not its subject', () => {
+    // The IAP resolved two different people for one request. Nothing downstream
+    // can tell which of them the audit trail should name.
+    const failure = onlyFailure(withResponsibleParty('SOMEONEELSE00X'));
+
+    expect(failure.code).toBe('identity-mismatch');
+    expect(failure.regionalErrorCode).toBe(
+      REGIONAL_ERROR_CODES.RESPONSIBLE_PARTY_FISCAL_CODE_MISMATCH,
+    );
+  });
+
+  it('marks the mismatch unrecoverable rather than retryable', () => {
+    // A re-request asks the same IAP the same question and gets the same two
+    // answers. Retrying it is a loop against a third party.
+    expect(onlyFailure(withResponsibleParty('SOMEONEELSE00X')).unrecoverable).toBe(true);
+  });
+
+  it('refuses an assertion naming a second responsible party beside the right one', () => {
+    expect(onlyFailure(withResponsibleParty(PLANTED_IDENTITY, 'SOMEONEELSE00X')).code).toBe(
+      'identity-mismatch',
+    );
+  });
+
+  it('holds two spellings of one tax code to be the same identity', () => {
+    // The region writes a Codice Fiscale in upper case, and case folding cannot
+    // make two different tax codes equal — so folding removes a way of refusing
+    // a correct assertion without weakening the check. See D-013.
+    expect(accepted(withResponsibleParty(PLANTED_IDENTITY.toLowerCase())).valid).toBe(true);
+  });
+
+  it('does not validate the tax code, on either side', () => {
+    // Deliberate — D-012. The check is that the assertion says one thing about
+    // who the operator is, not that this library believes the thing.
+    const assertion = bytes(
+      assertionXml({
+        subject: '<saml:Subject><saml:NameID>not-a-tax-code</saml:NameID></saml:Subject>',
+        statement: statementXml(
+          attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, 'not-a-tax-code'),
+        ),
+      }),
+    );
+
+    expect(accepted(assertion).operatorTaxCode).toBe('not-a-tax-code');
+  });
+
+  it('does not report a mismatch it has no second identity to have found', () => {
+    // The responsible party is absent, which is one failure and not two. A
+    // mismatch reported beside it would name a disagreement nothing had.
+    expect(failures(bytes(assertionXml({ statement: '' }))).map((failure) => failure.code)).toEqual([
+      'attribute-missing',
+    ]);
+  });
+});
+
+describe('validateAssertion — the subject identifier', () => {
+  it.each([
+    ['no NameID', '<saml:Subject/>'],
+    ['a blank NameID', '<saml:Subject><saml:NameID>   </saml:NameID></saml:Subject>'],
+    [
+      'two NameIDs',
+      `<saml:Subject><saml:NameID>${PLANTED_IDENTITY}</saml:NameID><saml:NameID>${PLANTED_IDENTITY}</saml:NameID></saml:Subject>`,
+    ],
+    [
+      'a NameID whose content is an element',
+      '<saml:Subject><saml:NameID><x>CF</x></saml:NameID></saml:Subject>',
+    ],
+  ])('refuses an assertion whose subject carries %s', (_case, subject) => {
+    // §4.1.6.2.2 makes the subject carry the operator's identifier, and this is
+    // the only place the success branch can report it from — so it is a
+    // structural requirement rather than a semantic one, and it stops the phase.
+    const failure = onlyFailure(bytes(assertionXml({ subject })));
+
+    expect(failure.code).toBe('malformed');
+    expect(failure.detail).toMatch(/NameID/);
+  });
+});
+
+describe('validateAssertion — what the success branch reports', () => {
+  it('reports the operator tax code the subject names', () => {
+    expect(accepted(bytes(assertionXml())).operatorTaxCode).toBe(PLANTED_IDENTITY);
+  });
+
+  it('reports the authentication level as undefined when the assertion attests none', () => {
+    expect(accepted(bytes(assertionXml())).authenticationLevel).toBeUndefined();
+  });
+
+  it('reports the audiences the assertion is scoped to, in document order', () => {
+    const conditions = [
+      '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z">',
+      '<saml:AudienceRestriction>',
+      '<saml:Audience>https://fser.regione.veneto.it/Registry</saml:Audience>',
+      '<saml:Audience>https://fser.regione.veneto.it/Repository</saml:Audience>',
+      '</saml:AudienceRestriction>',
+      '</saml:Conditions>',
+    ].join('');
+
+    expect(accepted(bytes(assertionXml({ conditions }))).audiences).toEqual([
+      'https://fser.regione.veneto.it/Registry',
+      'https://fser.regione.veneto.it/Repository',
+    ]);
+  });
+
+  it('reports the audiences of every audience restriction the assertion carries', () => {
+    const conditions = [
+      '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z">',
+      '<saml:AudienceRestriction><saml:Audience>https://a.example</saml:Audience></saml:AudienceRestriction>',
+      '<saml:AudienceRestriction><saml:Audience>https://b.example</saml:Audience></saml:AudienceRestriction>',
+      '</saml:Conditions>',
+    ].join('');
+
+    expect(accepted(bytes(assertionXml({ conditions }))).audiences).toEqual([
+      'https://a.example',
+      'https://b.example',
+    ]);
+  });
+
+  it('reports no audiences for an assertion that names none', () => {
+    // §4.1.6.2.2 makes the audience restriction optional, so an assertion
+    // without one is scoped to nothing in particular rather than malformed.
+    // Whether that is good enough for the service about to be called is the
+    // audience match's question, not this one's.
+    expect(accepted(bytes(assertionXml())).audiences).toEqual([]);
   });
 });

@@ -20,8 +20,11 @@ export type {
   AssertionFailureCode,
   AssertionValidation,
   InvalidAssertion,
+  ServicePolicy,
   ValidAssertion,
 } from './assertion.js';
+export { ASSERTION_ATTRIBUTES } from './assertion-attributes.js';
+export type { AssertionAttributes } from './assertion-attributes.js';
 export { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
 export type { RegionalErrorCode } from './regional-error-codes.js';
 export { buildRve1bRequest } from './request-envelope.js';

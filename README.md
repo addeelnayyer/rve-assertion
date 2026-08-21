@@ -533,8 +533,8 @@ npm run typecheck   # tsc --noEmit
 ### Mutation testing
 
 The suite is worth what it catches, not what it runs, so it was run under
-[StrykerJS](https://stryker-mutator.io/) locally: 917 mutants over `src/`, of
-which **903 are killed — a mutation score of 98.47%**. What the first run found
+[StrykerJS](https://stryker-mutator.io/) locally: 911 mutants over `src/`, of
+which **897 are killed — a mutation score of 98.46%**. What the first run found
 was fixed rather than explained away, and two kinds of thing came back:
 
 - **Tests that were not failing when they should.** Fixtures built at module or

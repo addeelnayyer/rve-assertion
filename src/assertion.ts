@@ -134,6 +134,9 @@ const AUDIENCE_RESTRICTION_ELEMENT = 'AudienceRestriction';
 /** The local name of the element naming one such service — §4.1.6.2.2. */
 const AUDIENCE_ELEMENT = 'Audience';
 
+/** The element naming the IAP that issued the assertion — §4.1.6.2.2. */
+const ISSUER_ELEMENT = 'Issuer';
+
 /** The element §4.1.6.2.2 puts the operator's identity in. */
 const SUBJECT_ELEMENT = 'Subject';
 
@@ -539,25 +542,8 @@ function firstAbsent(element: Element, names: readonly string[]): string | undef
   return names.find((name) => attribute(element, name) === undefined);
 }
 
-/** The attributes §4.1.6.2.2 makes mandatory on the assertion, beside Version. */
-const REQUIRED_ASSERTION_ATTRIBUTES = ['ID', 'IssueInstant'] as const;
-
 /** The attributes §4.1.6.2.2 requires the Conditions element to carry. */
 const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
-
-/**
- * The elements §4.1.6.2.2 says an assertion MUST contain, that the structural
- * phase is the right place to insist on.
- *
- * `ds:Signature` is mandatory too and is deliberately not here: its absence and
- * its being malformed map to different regional error codes, so it is checked
- * where that distinction can be drawn rather than collapsed into `malformed`.
- *
- * Presence only. Whether the subject names the same operator as the
- * responsible-party attribute, and whether the issuer is one this caller
- * trusts, are semantic questions about a document that has to exist first.
- */
-const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as const;
 
 /**
  * What the structural phase hands the semantic phase, or the one reason it has
@@ -691,29 +677,38 @@ function readStructure(assertion: Uint8Array): StructuralRead {
     return refused(`the assertion does not declare Version "${SAML_VERSION}".`);
   }
 
-  const absentAttribute = firstAbsent(element, REQUIRED_ASSERTION_ATTRIBUTES);
-  if (absentAttribute !== undefined) {
-    return refused(`the assertion carries no ${absentAttribute} attribute.`);
+  // Each mandatory part is asked for once, where what it produces is used.
+  // Counting them somewhere above and reading them here would make one of the
+  // two unreachable, and an unreachable check is one no test can hold to being
+  // right. `ds:Signature` is mandatory too and is deliberately checked
+  // elsewhere: its absence and its being malformed map to different regional
+  // error codes, which a refusal from here would collapse into `malformed`.
+  const id = attribute(element, 'ID');
+  if (id === undefined) {
+    return refused('the assertion carries no ID attribute.');
+  }
+
+  if (attribute(element, 'IssueInstant') === undefined) {
+    return refused('the assertion carries no IssueInstant attribute.');
   }
 
   // Exactly one of each, not at least one. A second Conditions element would
   // give the validity-window check two windows to choose between, and a choice
-  // is exactly what a document that wants to be read two ways relies on.
-  for (const name of REQUIRED_ASSERTION_ELEMENTS) {
-    if (samlChildren(element, name).length !== 1) {
-      return refused(`the assertion does not carry exactly one ${name} element.`);
-    }
+  // is exactly what a document that wants to be read two ways relies on —
+  // which is why `onlySamlChild`, undefined for none and for two alike, is what
+  // both refuses and produces the element.
+  if (samlChildren(element, ISSUER_ELEMENT).length !== 1) {
+    return refused(`the assertion does not carry exactly one ${ISSUER_ELEMENT} element.`);
+  }
+
+  const subject = onlySamlChild(element, SUBJECT_ELEMENT);
+  if (subject === undefined) {
+    return refused(`the assertion does not carry exactly one ${SUBJECT_ELEMENT} element.`);
   }
 
   const conditions = onlySamlChild(element, CONDITIONS_ELEMENT);
-  const subject = onlySamlChild(element, SUBJECT_ELEMENT);
-  if (conditions === undefined || subject === undefined) {
-    // Unreachable: the loop above established there is exactly one of each.
-    // Written as a return rather than an assertion so that the compiler's
-    // narrowing and the runtime's behaviour agree without a cast.
-    return refused(
-      `the assertion does not carry exactly one ${SUBJECT_ELEMENT} and ${CONDITIONS_ELEMENT} element.`,
-    );
+  if (conditions === undefined) {
+    return refused(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
   }
 
   const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
@@ -749,14 +744,6 @@ function readStructure(assertion: Uint8Array): StructuralRead {
   // reports both bounds failing, which is the whole truth about it and needs
   // nothing invented. Refusing a window for its *length* is a different
   // question, and its answer belongs to the party holding the policy — D-013.
-  const id = attribute(element, 'ID');
-  if (id === undefined) {
-    // Unreachable: ID is one of the required attributes checked above. Written
-    // as a return rather than an assertion for the same reason the subject and
-    // conditions case above is.
-    return refused('the assertion carries no ID attribute.');
-  }
-
   return {
     read: true,
     window: { notBefore: notBefore.instant, notOnOrAfter: notOnOrAfter.instant },
@@ -999,7 +986,6 @@ function checkAuthenticationLevel(
   readonly authenticationLevel: string | undefined;
 } {
   const levels = attributes.get(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL) ?? [];
-  const authenticationLevel = levels.length === 1 ? levels[0] : undefined;
 
   if (levels.length > 1) {
     // Two answers to a question with one answer, whatever the policy asked for
@@ -1007,7 +993,7 @@ function checkAuthenticationLevel(
     // authenticated attests nothing, and there is no service that is safe for.
     // Argued in `docs/spec-questions.md` (D-023).
     return {
-      authenticationLevel,
+      authenticationLevel: undefined,
       failures: [
         {
           code: 'authentication-level-not-attested',
@@ -1018,6 +1004,10 @@ function checkAuthenticationLevel(
       ],
     };
   }
+
+  // Read only once the assertion is known not to contradict itself, so that the
+  // level reported is the level attested rather than the first of two.
+  const authenticationLevel = levels[0];
 
   if (
     policy.requiredAuthenticationLevel !== undefined &&

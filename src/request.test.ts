@@ -283,3 +283,146 @@ describe('the audiences', () => {
     expect(rve1bRequest(withInput({ audiences })).audiences).toEqual(audiences);
   });
 });
+
+describe('the shape of the UUID a derivation will accept', () => {
+  // The pattern is anchored at both ends. Unanchored, it would find a UUID
+  // inside a longer string and derive an identifier from a message ID the IAP
+  // will not recognise — which is the failure that arrives as a regional error
+  // code hours later rather than at the call site.
+  it('rejects a message ID carrying anything before the UUID', () => {
+    expect(() => deriveRequestId('urn:uuid:xx3f2504e0-4f89-41d3-9a0c-0305e82c3301')).toThrow(
+      RequestInputError,
+    );
+  });
+
+  it('rejects a message ID carrying anything after the UUID', () => {
+    expect(() => deriveRequestId('urn:uuid:3f2504e0-4f89-41d3-9a0c-0305e82c3301-and-more')).toThrow(
+      RequestInputError,
+    );
+  });
+
+  it('rejects an identifier carrying anything before or after the UUID', () => {
+    expect(() => deriveMessageId('msgId_xx3f2504e0-4f89-41d3-9a0c-0305e82c3301')).toThrow(
+      RequestInputError,
+    );
+    expect(() => deriveMessageId('msgId_3f2504e0-4f89-41d3-9a0c-0305e82c3301-and-more')).toThrow(
+      RequestInputError,
+    );
+  });
+});
+
+describe('what a refusal says', () => {
+  // A smart constructor that refused without naming the field would send the
+  // caller back to the specification to find out which of a dozen inputs was
+  // wrong, which is the cost the throwing design was chosen to avoid. So the
+  // message is part of the contract, and each row here names the field it
+  // expects to be told about.
+  it.each<[string, Rve1bRequestInput, RegExp]>([
+    [
+      'a blank username',
+      withInput({ username: { form: 'plaintext', value: ' ' } }),
+      /The username is blank/,
+    ],
+    [
+      'a blank ciphertext',
+      withInput({ username: { form: 'encrypted', ciphertext: '' } }),
+      /The encrypted username is blank/,
+    ],
+    ['a blank ApplicationID', withInput({ applicationId: ' ' }), /The ApplicationID is blank/],
+    ['a blank recipient', withInput({ recipient: '  ' }), /The recipient is blank/],
+    [
+      'a relative recipient',
+      withInput({ recipient: '/ws' }),
+      /The recipient is "\/ws", which is not an absolute URI/,
+    ],
+    [
+      'an audience that is not a URL',
+      withInput({ audiences: ['fser'] }),
+      /An audience is "fser", which is not an absolute URI/,
+    ],
+    ['a blank patient identifier', withInput({ patientId: ' ' }), /The patient identifier is blank/],
+    ['a blank OTP code', withInput({ otpCode: ' ' }), /The OTP code is blank/],
+    [
+      'a blank authorising organisation code',
+      withInput({ authorisingOrganisations: [' '] }),
+      /An authorising organisation code is blank/,
+    ],
+    [
+      'an issue instant that is not an instant',
+      withInput({ issueInstant: new Date('the day before') }),
+      /The issue instant is not a valid instant/,
+    ],
+    [
+      'a start of the validity window that is not an instant',
+      withInput({ notBefore: new Date('the day before') }),
+      /The start of the validity window is not a valid instant/,
+    ],
+    [
+      'an end of the validity window that is not an instant',
+      withInput({ notOnOrAfter: new Date('the day after') }),
+      /The end of the validity window is not a valid instant/,
+    ],
+    [
+      'a window that ends before it begins',
+      withInput({
+        notBefore: new Date('2026-08-21T13:00:00Z'),
+        notOnOrAfter: new Date('2026-08-21T09:00:00Z'),
+      }),
+      /The validity window 2026-08-21T13:00:00Z\/2026-08-21T09:00:00Z is empty/,
+    ],
+    [
+      'an authentication level the specification does not attest',
+      withInput({ authenticationLevel: 'urn:rve:authnL3' as never }),
+      /"urn:rve:authnL3" is not an authentication level/,
+    ],
+  ])('names the field when it refuses %s', (_case, input, expected) => {
+    expect(() => rve1bRequest(input)).toThrow(expected);
+  });
+
+  it('names the value and the prefix when a message ID cannot be derived from', () => {
+    expect(() => deriveRequestId('9376254e-da05-41f5-9af3-ac56d63d8ebd')).toThrow(
+      /"9376254e-da05-41f5-9af3-ac56d63d8ebd" does not start with "urn:uuid:"\. §4\.2\.5\.2 derives/,
+    );
+    expect(() => deriveRequestId('urn:uuid:not-a-uuid')).toThrow(
+      /does not name a UUID after its "urn:uuid:" prefix/,
+    );
+    expect(() => deriveMessageId('9376254e')).toThrow(
+      /does not start with "msgId_"\. It was therefore not derived from a message ID/,
+    );
+  });
+
+  it('throws an error a caller can catch by name', () => {
+    // The class is the contract, and `name` is how it survives a serialised
+    // log where the prototype chain does not.
+    try {
+      rve1bRequest(withInput({ applicationId: '' }));
+      expect.unreachable('the constructor should have refused a blank ApplicationID');
+    } catch (error) {
+      expect(error).toBeInstanceOf(RequestInputError);
+      expect((error as Error).name).toBe('RequestInputError');
+    }
+  });
+});
+
+describe('the username, as the request carries it', () => {
+  it('reports a plaintext username as plaintext', () => {
+    // The discriminant is what the builder switches on to decide whether to
+    // mark the element encrypted, so a request that lost it would emit a
+    // ciphertext the IAP never decrypts.
+    expect(rve1bRequest(VALID).username).toEqual({
+      form: 'plaintext',
+      value: 'a-directory-server-username',
+    });
+  });
+});
+
+describe('what a refusal says about the request context', () => {
+  it('names the code it will not build', () => {
+    const input = withInput({}) as { requestContext: string };
+    input.requestContext = 'C.1.6';
+
+    expect(() => rve1bRequest(input as Rve1bRequestInput)).toThrow(
+      /"C\.1\.6" is not a request context defined by Appendix/,
+    );
+  });
+});

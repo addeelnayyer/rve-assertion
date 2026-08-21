@@ -263,11 +263,7 @@ function checkedAudience(value: string): string {
  * would turn a mismatch into a crash on a document the caller cannot control.
  */
 function normalised(value: string): string {
-  try {
-    return new URL(value).href;
-  } catch {
-    return value;
-  }
+  return URL.canParse(value) ? new URL(value).href : value;
 }
 
 /**

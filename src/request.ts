@@ -321,9 +321,17 @@ function wholeSecond(date: Date, what: string): Date {
   return new Date(Math.floor(milliseconds / 1000) * 1000);
 }
 
-/** Renders a whole-second instant as `YYYY-MM-DDThh:mm:ssZ` — see D-004. */
+/**
+ * Renders a whole-second instant as `YYYY-MM-DDThh:mm:ssZ` — see D-004.
+ *
+ * The milliseconds are dropped by length rather than matched by pattern:
+ * `toISOString` always ends in `.sssZ`, whatever the year in front of it, so
+ * cutting those five characters leaves the whole-second form for an expanded
+ * year as well as an ordinary one.
+ */
 function utcSecondsLexical(date: Date): string {
-  return date.toISOString().replace(/\.000Z$/, 'Z');
+  const iso = date.toISOString();
+  return `${iso.slice(0, iso.length - '.sssZ'.length)}Z`;
 }
 
 /**

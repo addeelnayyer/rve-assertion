@@ -298,3 +298,13 @@ describe('the namespace layout', () => {
     }
   });
 });
+
+describe('the serialised form', () => {
+  it('is indented, so a captured envelope can be read by the person diagnosing it', () => {
+    // Not cosmetic. The envelope is what a support engineer is handed when the
+    // IAP refuses one, and a single-line SOAP envelope is read by nobody.
+    const xml = new TextDecoder().decode(buildRve1bRequest(rve1bRequest(VALID)));
+
+    expect(xml).toMatch(/\n\s+<wsa:MessageID>/);
+  });
+});

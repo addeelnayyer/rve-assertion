@@ -625,3 +625,76 @@ Directory Server username — a lookup failure reported as an unknown user, whic
 names neither the attribute nor the encryption. A caller sending encrypted
 usernames should confirm this against its AULSS before going live; a caller
 sending plaintext ones is unaffected, since the attribute is then absent.
+
+### D-009 — A returned assertion is decoded as UTF-8, strictly
+
+**Citations.** §4.1.6.2.2 (the assertion structure), which §4.2.6 adopts for the
+RVE-1.b response; §4.6, which requires the assertion be spent exactly as
+returned.
+
+The specification names no character encoding for the assertion, and gives no
+rule for reading the XML declaration of a document arriving as bytes. Every
+worked example in the excerpt is ASCII, so none of them settles it either.
+
+The validator decodes as UTF-8 and refuses bytes that are not valid UTF-8,
+rather than consulting the document's own encoding declaration or falling back
+to a legacy single-byte encoding. UTF-8 is the XML default for a document
+without a declaration, it is what the request side emits, and the alternative —
+implementing encoding detection over an unauthenticated document in order to
+decide how to read it — is a parser this library has no reason to own.
+
+Strict rather than replacing is the part that matters. A decoder substituting
+`U+FFFD` for an undecodable sequence produces a document that parses, validates
+and reads as an operator's tax code with one character silently changed. The
+substitution is invisible at every subsequent step, including the identity
+cross-check, which would then be comparing two corrupted values that agree.
+
+The cost: an AULSS whose IAP returns an assertion in ISO-8859-1 — which nothing
+in the excerpt forbids — would have every such assertion refused as malformed,
+including ones the region considers valid. The refusal is loud and local, which
+is the failure mode to prefer over a quietly altered identity, and the fix is
+one decision in this module rather than a hunt through downstream comparisons.
+
+### D-010 — A document a parser has to recover from is refused, not repaired
+
+**Citations.** §4.1.6.2.2 (the mandatory `ds:Signature` over the assertion);
+§4.6 (spent without modification of any kind).
+
+The specification says nothing about how a client should parse what it receives,
+because from its point of view a non-conforming document is simply not an
+assertion. That leaves the choice of parser strictness to the client, and the
+default of the parser this library uses is to recover from an error-level
+problem and carry on.
+
+The validator turns recovery off. A recovered document is one whose element tree
+no longer corresponds to the bytes it came from, and every check downstream of
+the parse — the window, the audience, the identity, and above all the binding of
+the signature reference to the assertion identifier — would then be evaluated
+against the parser's reconstruction rather than against what the region signed
+and what the caller will spend. A validator whose answer is about a different
+document than the one being sent is worse than one that declines to answer.
+
+The cost: an IAP emitting an assertion with a defect a lenient parser would
+paper over gets its assertions refused here, and the caller sees `malformed`
+where a more forgiving client would have proceeded. That is the intended
+trade: this library's answer is only meaningful about bytes it read exactly.
+
+### D-011 — An assertion carrying a document type declaration is refused
+
+**Citations.** §4.1.6.2.2, which lists the elements and attributes an assertion
+carries and names no document type declaration; §4.6 (spent without
+modification of any kind).
+
+The excerpt neither permits nor forbids a `DOCTYPE`, and no worked example
+carries one. The validator refuses any document that has one.
+
+An internal subset is where an entity declaration would live, and an entity is a
+name in the document that stands for content the parser substitutes. Against a
+signed credential that is a way to make the element tree say something other
+than what the bytes say — the same hazard D-010 describes, arriving through a
+feature rather than through a defect. Refusing before reading the tree is
+cheaper and more certain than reasoning about which substitutions are harmless.
+
+The cost is small and worth naming anyway: an IAP that emitted a `DOCTYPE` for
+some local reason would have its assertions refused as malformed, and the detail
+says which check refused them.

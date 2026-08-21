@@ -14,6 +14,14 @@ export {
   WS_ADDRESSING_NAMESPACE,
   WS_SECURITY_SECEXT_NAMESPACE,
 } from './namespaces.js';
+export { validateAssertion } from './assertion.js';
+export type {
+  AssertionFailure,
+  AssertionFailureCode,
+  AssertionValidation,
+  InvalidAssertion,
+  ValidAssertion,
+} from './assertion.js';
 export { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
 export type { RegionalErrorCode } from './regional-error-codes.js';
 export { buildRve1bRequest } from './request-envelope.js';

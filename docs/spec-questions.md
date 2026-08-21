@@ -148,6 +148,12 @@ value takes, or `unrecognised` for neither. It is exported for a caller checking
 tenant configuration at startup, and **nothing in the library consults it** — no
 request is refused on the strength of it.
 
+One value is refused, and it is not a format judgement: the request builder
+rejects a blank or whitespace-only ApplicationID. A blank string is the absence
+of a value rather than a form the region might have allocated, and emitting an
+empty `AttributeValue` would send the IAP a lookup key it cannot match against
+any boundary-table row.
+
 **The basis.** The value is allocated by the AULSS, not composed by this
 library. Between a prose rule and an example that breaks it, an enforcement
 either rejects values the region issues or silently blesses a format the region
@@ -209,10 +215,19 @@ values arriving as plain strings, and `C.1.6` is not a member — so the one
 context code the specification demonstrates is the one context code this library
 will not build a request from.
 
-`src/vocabulary.test.ts` asserts that rejection by name, so that it reads as
+`src/request-vocabulary.test.ts` asserts that rejection by name, so that it reads as
 this decision rather than as an oversight in the table transcription. `C.4.2` is
 reproduced exactly as Table 5 gives it, on the same principle: the table is the
 vocabulary, and an IAP may well have implemented the row literally.
+
+The request builder is where this becomes visible to a caller. `rve1bRequest`
+re-checks the context at runtime rather than trusting the compiler, because the
+value usually arrives from tenant configuration as a plain string, and it throws
+on `C.1.6` with a message pointing here. One consequence is worth stating: the
+envelope builder's tests cannot use §4.2.5.2's worked request verbatim, so the
+test that pins the published example's namespace layout substitutes a context
+code the code system does define. Every other value in that fixture is the
+example's own.
 
 **The basis.** The check that matters happens at the IAP: the declared context
 must be a member of the set the organisation enabled for the calling
@@ -299,6 +314,123 @@ head.
 
 ---
 
+### Q-006 — §4.2.5.2 promises sub-elements that identify the requester and the subject, and then names none
+
+**Citations.** §4.2.5.2 (the prose introducing the `samlp:AuthnRequest`
+sub-elements, the list of sub-elements that follows it, and the worked request
+below that); §4.2.1 (RVE-1.b's attribute set, which defers to RVE-1.a);
+§4.1.8, Table 3 (the RVE-1.a information-content matrix); §4.2.5.3 (the IAP's
+expected actions on receipt).
+
+**The statement.** §4.2.5.2 says that the `samlp:AuthnRequest` element contains
+sub-elements identifying the actor performing the request, the subject the
+assertion is to be created for, and the reason. The list immediately below it
+names two sub-elements — `samlp:Extensions` and `saml:Conditions` — and neither
+identifies an actor or a subject. The worked request carries the same two and
+nothing else: no `saml:Issuer`, no `saml:Subject`, no `Destination` attribute.
+
+Table 3 pulls the other way. It marks the responsible party's Codice Fiscale as
+Required in a `saml:Issuer` element and the operator's Codice Fiscale as
+Required in `saml:Subject/saml:NameID` — but it is the RVE-1.a matrix, and §4.2.1
+says RVE-1.b carries username, UserClientAuthentication, RequestContext and
+ApplicationID, referring to RVE-1.a only for the *description* of those
+attributes rather than for the set. §4.2.5.3 then has the IAP recover the Codice
+Fiscale by querying its Directory Server from the username, which is precisely
+the work an `Issuer` element would have made unnecessary.
+
+**What the code does.** Emits neither, and emits no `Destination` attribute and
+no `wsa:ReplyTo` element either. The header carries exactly the three
+WS-Addressing elements §4.2.5.2 names and the body carries exactly the two
+sub-elements it lists. Tests assert each absence by name, so that a later reader
+finds a decision rather than a gap.
+
+**The basis.** The three sources are consistent under one reading: RVE-1.b
+substitutes the `wsse:Username` for the identity elements RVE-1.a carries in the
+SAML body, which is what makes it the *trusted application* transaction — the
+application asserts who the operator is by naming them, and the IAP resolves the
+rest. Under that reading the prose sentence is inherited boilerplate from the
+RVE-1.a section and Table 3 is scoped to RVE-1.a, as its own title says. The
+worked example is the only artefact that shows an RVE-1.b request whole, and it
+agrees.
+
+Emitting an `Issuer` this library cannot populate correctly would be worse than
+omitting it. The value Table 3 wants there is the responsible party's Codice
+Fiscale, which the calling application may not hold — §4.2.5.3 exists because
+the IAP is the party that can look it up.
+
+**The cost.** If Table 3 does govern RVE-1.b, every request this library builds
+is missing two required elements and will be refused, and the refusal will not
+say which. That is a loud, immediate, whole-integration failure rather than a
+subtle one, so it would be found on the first call rather than in production —
+but it would block the integration until the elements were added.
+
+**The question as it would be sent.**
+
+> §4.2.5.2 introduces the `samlp:AuthnRequest` sub-elements as identifying the
+> actor performing the request and the subject the assertion is for, but the
+> list that follows names only `samlp:Extensions` and `saml:Conditions`, and the
+> worked request carries no `saml:Issuer`, no `saml:Subject` and no
+> `Destination` attribute. Table 3, however, marks `Issuer` and
+> `Subject/NameID` as Required — for RVE-1.a. Should an RVE-1.b request carry
+> `saml:Issuer` and `saml:Subject`, or does the `wsse:Username` in the security
+> header take their place, as §4.2.5.3's transcoding step suggests? If they are
+> required, what should a trusted application that holds only the operator's
+> username — and not their Codice Fiscale — populate them with? Separately,
+> should the request carry a `Destination` attribute or a `wsa:ReplyTo` element?
+> §4.2.5.2 names neither, and we currently emit neither.
+
+---
+
+### Q-007 — `codAziendaAuth` is defined as a list, and no encoding for a list is given
+
+**Citations.** §4.2.5.2 (the `codAziendaAuth` attribute, defined as conveying a
+list of FLS11 codes); the RVE-1.a assertion's attribute list _(number to
+confirm)_, which repeats the same wording; §4.2.5.2's worked request, which does
+not carry the attribute.
+
+**The statement.** `codAziendaAuth` is defined as carrying a *list* of FLS11
+codes — one per organisation that authorised the document viewing or retrieval.
+Every other request attribute §4.2.5.2 defines is single-valued, and the worked
+example — which carries none of the optional attributes — shows one
+`AttributeValue` per `Attribute`.
+Nothing says whether a list is written as several `AttributeValue` children of
+one `Attribute`, as one delimited string in a single `AttributeValue`, or as
+several `Attribute` elements sharing a name. The three are not
+interchangeable to a receiver.
+
+**What the code does.** Emits one `Attribute` element carrying one
+`AttributeValue` per code. An empty or omitted list emits no element at all.
+
+**The basis.** SAML 2.0 defines `Attribute` as carrying zero or more
+`AttributeValue` children precisely so that a multi-valued attribute needs no
+encoding of its own, and §4.2.5.2 says the body is structured in accordance with
+the SAML specifications. A delimited string would have to invent a separator the
+document does not give, and the region's other composite value — the
+ApplicationID of Q-003 — separates on `^`, which is not a separator any SAML
+reader would split on. Between a guess that follows the ambient standard and a
+guess that invents a convention, the first is the one a receiver is more likely
+to have implemented.
+
+**The cost.** An IAP expecting a delimited string reads only the first code, or
+none, and authorises against a shorter list than the caller intended. That
+failure is silent: the request succeeds and the assertion comes back scoped more
+narrowly than asked for, and the caller finds out at the X-Service Provider.
+This is the one place in the request builder where being wrong does not announce
+itself, which is why it is written down.
+
+**The question as it would be sent.**
+
+> `codAziendaAuth` is defined as conveying the list of FLS11 codes of the
+> organisations that authorised document viewing or retrieval, but no worked
+> example carries the attribute and no encoding for the list is given. Should a
+> client emit one `Attribute` element with one `AttributeValue` child per code —
+> which is what we currently do — or a single `AttributeValue` containing a
+> delimited string, and if the latter, which separator? The same question
+> applies to the `codAziendaAuth` attribute of the assertion, since it is
+> described as inherited from the request.
+
+---
+
 ## Decisions where the specification is silent
 
 Not contradictions — points the specification simply does not settle, where the
@@ -359,3 +491,137 @@ The cost: a caller that generates `URN:UUID:` message IDs gets a hard failure
 for something the region would have accepted. The error message names the
 canonical form, so the fix is a one-line change at the call site rather than an
 investigation.
+
+### D-004 — Timestamps are written as whole seconds in UTC with a `Z` suffix
+
+**Citations.** §4.2.5.2 (`IssueInstant`, `NotBefore` and `NotOnOrAfter`, each
+of which it requires to be in UTC, and the worked request that carries all
+three); XML Schema Part 2, `xs:dateTime`, which is the type SAML 2.0 declares
+these attributes as.
+
+Requiring UTC does not pin a lexical form. `xs:dateTime` admits fractional
+seconds and admits any timezone offset, so `2026-08-21T09:00:00.123456+00:00`
+and `2026-08-21T11:00:00+02:00` both name instants in UTC and both differ from
+what the specification's examples write. The examples — `2014-01-20T13:51:13Z`,
+`2013-10-15T16:09:30Z` — are the only evidence available, and they agree with
+one another: whole seconds, `Z` rather than `+00:00`, no fractional part.
+
+The library emits that form and no other. A caller's `Date` is truncated to a
+whole second on the way in, towards the past, so a `NotBefore` never moves later
+than the caller asked and a `NotOnOrAfter` never moves earlier — the requested
+window is never widened by rounding. The truncated values are what the validity
+check runs against, because they are what the IAP will see.
+
+The cost: a caller needing sub-second precision cannot express it, and two
+requests issued within the same second carry the same `IssueInstant`. Neither
+matters for a validity window measured in hours, and the message ID is what
+distinguishes two requests in any case. If a regional service ever needs finer
+resolution, this is the decision to revisit.
+
+### D-005 — The issue instant is not checked against the requested validity window
+
+**Citations.** §4.2.5.2 (`IssueInstant` on the `AuthnRequest`, and `NotBefore` /
+`NotOnOrAfter` on the `Conditions`, and the worked request carrying all three).
+
+It would be natural to require that a request be issued inside the window it
+asks for — a request created after its own `NotOnOrAfter` is asking for an
+assertion that has already expired. The library does not check it, because
+§4.2.5.2's worked request fails that check: it carries an `IssueInstant` in
+January 2014 and a requested window in October 2013, some three months earlier.
+
+Nothing in the prose relates the two values, so the example is not contradicting
+a stated rule; it is simply showing that they are independent, or that the
+example's timestamps were written at different times and never reconciled. Given
+that, a check would be this library's invention rather than the specification's
+requirement, and it would refuse the specification's own example.
+
+What is checked is the window's internal consistency: `NotOnOrAfter` must be
+strictly after `NotBefore`, once both are truncated to whole seconds. That one
+does not depend on any reading of the document — `NotOnOrAfter` excludes its own
+instant, so an equal or inverted pair asks for an assertion that is valid at no
+moment at all, which no caller can have meant.
+
+The cost: a caller with a clock error, or one that computes its window from the
+wrong base, gets a request built and an assertion it cannot use. The failure
+surfaces at the X-Service Provider as an expired assertion rather than at the
+call site.
+
+### D-006 — The schema-location hints in the worked example are not emitted
+
+**Citations.** §4.2.5.2's worked request, which carries `xsi:schemaLocation` on
+its `soap:Envelope`, `soap:Header`, `wsse:Security` and `soap:Body` elements;
+XML Schema Part 1, which defines `xsi:schemaLocation` as a hint.
+
+The example's hints pair each namespace with a bare filename —
+`soap-envelope.xsd`, `ws-addr.xsd`, `saml-schema-protocol-2.0.xsd` — resolved
+relative to the document. On the wire there is no document base to resolve them
+against, so they name nothing. They are a validating editor's artefact, retained
+when the example was pasted into the specification.
+
+The library omits them. A processor is free to ignore `xsi:schemaLocation`
+entirely, and one that honours it would be handed unresolvable references.
+Copying them would also mean declaring the `xsi` namespace for no other purpose.
+
+The cost: the output is not a byte-level match for the published example, and
+anyone diffing the two will see these attributes as the difference. That is why
+it is written down here rather than left to be rediscovered.
+
+### D-007 — An authentication level other than the one attested is refused
+
+**Citations.** §4.2.5.2 (the `authLevel` attribute, and the note that regional
+projects may provide for further request parameters, deferring their definition
+to RVE-1.d); §4.1.8, Table 3, which lists `authLevel` as Optional in both
+directions.
+
+`authLevel` is optional, and §4.2.5.2 names exactly one value for it — the URN
+declaring two-factor authentication. It gives no code system to draw others
+from, and unlike the request context (Q-004) there is no table to be a member
+of. Whether the region has since defined a level above or below it, this excerpt
+cannot say.
+
+The library models the attribute as a union of one: omit it, or declare the one
+level the specification attests. The smart constructor re-checks the value at
+runtime, since a level typically reaches it from the same tenant configuration
+the request context does.
+
+The basis is the asymmetry with Q-003. An ApplicationID is a value the AULSS
+allocated to the caller, so refusing an unrecognised one fails a deployment
+nobody on site can fix. An authentication level is a value the caller *chooses*,
+from a vocabulary of one, and an unattested URN is a claim about how the
+operator authenticated that no regional document backs — the sort of claim an
+IAP is entitled to reject, and one this library should not put on the wire
+silently.
+
+The cost: if the region has added a third level and this excerpt predates it, a
+caller entitled to declare it cannot, and there is no escape hatch short of a
+change here. The refusal is immediate and names the value it will accept, so the
+failure is a blocked feature and a fast question rather than a wrong assertion.
+
+### D-008 — The encrypted-username marker is written as an unprefixed attribute
+
+**Citations.** §4.2.5.2 (the rule signalling an encrypted username, written as
+`wsse:Username/@type`); §4.2.5.3 (the IAP's handling, which reads it back the
+same way); the worked request, which carries a plaintext username and therefore
+does not show the attribute at all.
+
+The specification writes the rule in XPath. In XPath, a prefix on the element
+step qualifies the element, and an unprefixed attribute name is in no namespace
+— so `wsse:Username/@type` names an unprefixed `type` attribute on a qualified
+`wsse:Username` element. Read as a literal fragment of XML instead, the same
+string could be taken to mean `type` is itself in the `wsse` namespace. No
+example settles it, because the only worked request sends a plaintext username.
+
+The library emits the unprefixed form. Both occurrences in the document are
+XPath — the rule and the IAP's handling of it — which is the reading that makes
+them consistent, and an unprefixed attribute on a qualified element is the norm
+throughout WS-Security and SAML, including every other attribute this library
+emits.
+
+The cost is the highest of any decision here, because unlike a namespace prefix
+on an element this one is not cosmetic: `type` and `wsse:type` are different
+attributes to a namespace-aware receiver. An IAP expecting the qualified form
+would not see the marker at all, and would then attempt to use ciphertext as a
+Directory Server username — a lookup failure reported as an unknown user, which
+names neither the attribute nor the encryption. A caller sending encrypted
+usernames should confirm this against its AULSS before going live; a caller
+sending plaintext ones is unaffected, since the attribute is then absent.

@@ -15,7 +15,7 @@
  * what the region said*.
  *
  * The names below are this library's own. Appendix A.5's descriptions are not
- * reproduced, for the reason given in `src/vocabulary.ts`; the section and
+ * reproduced, for the reason given in `src/request-vocabulary.ts`; the section and
  * table are cited instead.
  *
  * **Not a closed vocabulary.** Tables 9 and 10 end in an ellipsis in the

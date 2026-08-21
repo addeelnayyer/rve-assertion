@@ -698,3 +698,118 @@ cheaper and more certain than reasoning about which substitutions are harmless.
 The cost is small and worth naming anyway: an IAP that emitted a `DOCTYPE` for
 some local reason would have its assertions refused as malformed, and the detail
 says which check refused them.
+
+### D-012 — An assertion timestamp must carry a time zone, and may carry anything else `xs:dateTime` allows
+
+**Citations.** §4.1.6.2.2 (`NotBefore` and `NotOnOrAfter` on the assertion's
+`Conditions`, each required to be in UTC format, and the worked assertion that
+carries both); §4.2.5.2 (the same attributes on the request).
+
+The specification says "in UTC format" and shows `Z`-suffixed whole seconds. It
+does not say what a reader should do with the other lexical forms `xs:dateTime`
+admits — fractional seconds, an explicit `+02:00` offset, or no time zone at
+all — and a client has to decide, because a window it cannot read is a window it
+cannot check.
+
+The validator accepts any `xs:dateTime` that names an instant on its own:
+whole or fractional seconds, `Z` or an explicit numeric offset. It refuses a
+value with no time zone. A local time is a wall-clock reading rather than a
+moment, so comparing one to a clock compares it to whichever zone the reader
+happens to be in — two hosts in different zones would then reach different
+verdicts about the same assertion, which is worse than either of them refusing
+it. An explicit offset, by contrast, denotes exactly the same instant a `Z`
+value would, and refusing it would be refusing a spelling.
+
+The shape is checked with a pattern before the value reaches `Date.parse`, not
+after. `Date.parse` is free to accept implementation-defined formats beyond the
+one the language pins, and engines do; leaving the decision to it would make
+whether an assertion is refused depend on which JavaScript runtime is running.
+
+The cost: an IAP emitting a local-time `NotOnOrAfter` — which "in UTC format"
+already forbids, so this is a cost only against a non-conforming IAP — has its
+assertions refused as malformed rather than read in some assumed zone.
+
+### D-013 — The returned window is not checked against the four-hour or fifteen-minute figures
+
+**Citations.** §3.1.1 (the audience-restriction use case, where both figures
+appear); Appendix A.5, Table 10 (`ERR_00033`, an assertion whose time interval
+does not conform to the regional policies).
+
+§3.1.1 says a generic assertion lasts four hours and that more restrictive
+policies may be defined, giving fifteen minutes for document retrieval as an
+example. The validator does not compare a returned window's length to either
+figure, and does not refuse an assertion for being longer or shorter than the
+service it names would suggest.
+
+Both figures appear in a narrative use case describing what the Identity and
+Assertion Provider does, not in a table of constraints on what an X-Service User
+may accept, and the passage introduces them as an example of a policy mechanism
+rather than as the policy. The mechanism is explicitly open: policies are
+"defined at regional level" and per service, so the set of legitimate window
+lengths is one the region holds and this library does not. `ERR_00033` exists
+precisely because that judgement belongs to the party holding the policy — an
+X-Service Provider — and this library is not one (see `src/regional-error-codes.ts`).
+
+A client enforcing the figures anyway would refuse assertions the region
+considers valid the first time an AULSS configured a five-hour window or a
+thirty-minute one, and the refusal would be local, silent as to its real cause,
+and wrong. Not checking has the opposite cost: an IAP misconfigured to issue a
+year-long assertion is accepted here and refused at the service, which is a
+failure that surfaces where the policy lives.
+
+What *is* checked is that the caller's clock is inside the window, which needs
+no policy to evaluate. An inverted or empty window is not given a verdict of its
+own either: both bounds fail on their own terms and both are reported, which is
+the whole truth about such a window and needs nothing invented.
+
+### D-014 — Clock skew and estimated flight time are separate, required, caller-supplied inputs
+
+**Citations.** §4.1.6.2.2 (`NotBefore` and `NotOnOrAfter`); Appendix A.5, Table
+10 (`ERR_00031`, `ERR_00032`) and Table 12 (`ERR_00055`, date and time
+misaligned).
+
+The specification names no tolerance for a client whose clock differs from the
+IAP's, and none for the time a call takes to arrive, while naming a regional
+error code for a misaligned clock — so it expects the condition and leaves the
+allowance to the client.
+
+The validator takes the current instant as a required argument with no default,
+and takes the two allowances as two separate required arguments rather than one
+combined margin.
+
+They are separate because they are different quantities that happen to share a
+unit.
+
+Clock skew moves **both** bounds earlier by the same amount, which is the same
+thing as assuming this host's clock may be that far *behind* the issuer's. That
+is the direction in which being wrong is dangerous: a clock that is behind
+believes a window that has closed is still open, and spends an assertion the
+X-Service Provider will refuse. A clock that is ahead makes the opposite
+mistakes, and both of those are cheap — refusing an assertion just issued, or
+refusing one that is genuinely still open a moment before its far bound.
+
+Estimated flight time moves the far bound earlier again, and the near bound not
+at all. It is not uncertainty; it is a real interval that will have elapsed
+*after* this library answers, so an assertion that is valid now but expires
+before the call carrying it lands is one this library should refuse rather than
+let the X-Service Provider refuse.
+
+The net effect is what the code reads: the near bound is `NotBefore` less the
+skew, and the far bound is `NotOnOrAfter` less the skew *and* the flight time.
+A single combined margin cannot produce both, and collapsing them gets the near
+bound wrong in the direction that refuses assertions the IAP has only just
+issued.
+
+The recommended values are exported as named constants and never applied
+silently, so a caller taking them has written down that it did.
+`RECOMMENDED_CLOCK_SKEW_MS` is one minute — larger than the drift of a host that
+synchronises its clock at all, smaller than any window the excerpt describes.
+`RECOMMENDED_FLIGHT_TIME_MS` is five seconds and is documented in the source as
+a **placeholder**: it stands in for the caller's own measured high-percentile
+round trip to the regional services it calls, and nothing in the specification
+supports the number. Neither figure is the region's, and the source says so.
+
+The current instant is required rather than defaulted so that the validator can
+be driven at a chosen moment by a test, and by a caller with a better time
+source than this process's clock. The cost is one more argument at every call
+site, which is the visible choice being bought.

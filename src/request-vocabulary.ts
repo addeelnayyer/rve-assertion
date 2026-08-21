@@ -83,7 +83,7 @@ export const REQUEST_CONTEXTS = [
  */
 export type RequestContext = (typeof REQUEST_CONTEXTS)[number];
 
-const REQUEST_CONTEXT_LOOKUP: ReadonlySet<string> = new Set(REQUEST_CONTEXTS);
+const REQUEST_CONTEXT_LOOKUP: ReadonlySet<unknown> = new Set<unknown>(REQUEST_CONTEXTS);
 
 /**
  * Narrows an unknown value to a {@link RequestContext}.
@@ -98,10 +98,11 @@ const REQUEST_CONTEXT_LOOKUP: ReadonlySet<string> = new Set(REQUEST_CONTEXTS);
  * tenant is a startup failure or a per-request one.
  */
 export function isRequestContext(value: unknown): value is RequestContext {
-  // The set membership is the whole check. A `Set` compares by value, so a
+  // The set membership is the whole check, and the set is typed over `unknown`
+  // so that asking it about one costs no cast. A `Set` compares by value, so a
   // number, a null or an object is simply not in a set of strings, and a
   // `typeof` guard in front of this would be a second way of saying so.
-  return REQUEST_CONTEXT_LOOKUP.has(value as RequestContext);
+  return REQUEST_CONTEXT_LOOKUP.has(value);
 }
 
 /**

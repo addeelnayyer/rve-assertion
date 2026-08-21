@@ -533,8 +533,8 @@ npm run typecheck   # tsc --noEmit
 ### Mutation testing
 
 The suite is worth what it catches, not what it runs, so it was run under
-[StrykerJS](https://stryker-mutator.io/) locally: 914 mutants over `src/`, of
-which **900 are killed — a mutation score of 98.47%**. What the first run found
+[StrykerJS](https://stryker-mutator.io/) locally: 917 mutants over `src/`, of
+which **903 are killed — a mutation score of 98.47%**. What the first run found
 was fixed rather than explained away, and two kinds of thing came back:
 
 - **Tests that were not failing when they should.** Fixtures built at module or
@@ -560,9 +560,10 @@ npx stryker run --testRunner vitest --mutate 'src/**/!(*.test).ts'
 `--no-save` is the point: nothing is added to `package.json`, and the report
 lands in `reports/`, which is ignored.
 
-**Fourteen mutants survive, and all of them are equivalent** — they change the
-source without changing anything observable through the two public functions.
-They fall into four groups:
+**Fourteen mutants live: twelve survive a test run and two sit in statements no
+test reaches. All fourteen are equivalent** — each changes the source without
+changing anything observable through the two public functions, which is also why
+the two uncovered ones cannot be covered. They fall into four groups:
 
 | Survivors | Where | Why nothing can kill it |
 |---|---|---|
@@ -578,7 +579,7 @@ noise, listed rather than filtered so that the score above can be checked.
 
 ### The twelve tests
 
-The suite runs 391 assertions, but twelve of them are the argument.
+The suite runs 391 tests, but twelve of them are the argument.
 Each pins a decision that was actually made, so a reader can see which choice
 each one defends; the rest fill in around them. Four are mandated by the
 exercise brief and are marked **(brief)**. The fifth required test — the
@@ -619,67 +620,6 @@ aggregate is asserted in the same call that produces the failures it aggregates.
 pins the published names, so that adding or dropping one is a decision rather
 than an accident.
 
-
-### Mutation testing
-
-A test suite that passes proves the tests run, not that they would notice if the
-logic broke. Mutation testing asks the second question: change the code on
-purpose, and see whether a test fails.
-
-The run is local and the tool is **not a dependency of this package**. Stryker
-is installed for the run and removed after it, so a clean clone still installs
-without it:
-
-```sh
-npm install --no-save @stryker-mutator/core @stryker-mutator/vitest-runner
-npx stryker run
-```
-
-`stryker.conf.json` is committed so the run is reproducible; the report it
-writes to `reports/` is not, and that path is ignored.
-
-**Score: 92.4%** — 849 of 919 mutants killed, 62 survived, 8 uncovered. What the
-run found and what was done about it:
-
-| Found | Done |
-|---|---|
-| `readStructure` checked `ID`, `Subject` and `Conditions` for presence in a loop and then read each one again, so the second check could not fail | Each is now checked where it is read. One question that both refuses and produces the value is a question every input reaches — the unreachable branches are gone rather than annotated |
-| `checkAuthenticationLevel` computed the level before establishing the assertion did not attest two | The level is read only once the assertion is known not to contradict itself, so the value reported is the one attested rather than the first of two |
-| `isUri` and `checkedAudience` asked whether a value parsed by parsing it inside a `try` | Both use `URL.canParse`. The question is asked directly, leaving no catch block whose body is unobservable from outside the function |
-| `audienceMatches` policies were built once in a `describe` body, where a throw loses the whole file | Built per test, so a failure names its reason |
-
-The score moved from 85.7% to 92.4%.
-
-**The deliberate survivor.** One mutant survives because it is *equivalent* —
-no test can kill it, and the day one can, the code will be wrong.
-
-`src/remedy.ts:291` — `withAuthenticationLevel ?? TWO_FACTOR_AUTHENTICATION_LEVEL`.
-Replacing `??` with `&&` survives, because `AuthenticationLevel` is today a union
-of one (D-007): both sides of the operator are the same value, so the two forms
-cannot be told apart by any input. The fallback is kept anyway. A step-up remedy
-naming no level is one a caller cannot execute, and when the region publishes a
-second level the service's requirement is the side that must win — at which
-point this mutant becomes killable and a test will pin it. See D-026 in
-[`docs/spec-questions.md`](docs/spec-questions.md). Deleting the fallback to
-reach a higher score would trade a correct remedy for a number.
-
-**The rest, and why they are not chased.** The remaining survivors fall into
-three classes, none of which a test could kill without making the suite worse:
-
-- **Message prose (25).** Mutating a `detail` or warning string to `""`
-  survives, because tests assert on the discriminated `code` and
-  `regionalErrorCode` a caller branches on, never on the sentence beside them.
-  Asserting the prose would pin wording that is meant to be rewritten.
-- **Defensive DOM guards (~20, mostly `src/saml-dom.ts` and
-  `src/signature.ts`).** Guards against node shapes `@xmldom/xmldom` does not
-  produce. Reaching them needs a hand-built DOM the parser cannot emit, which
-  would test the fixture rather than the library.
-- **Equivalent mutants (the remainder).** `.map((a) => text(a))` against
-  `.map(text)`; `name.trim()` against `name` where the value was trimmed on the
-  way in. Different source, same behaviour, by construction.
-
-Chasing any of the three would raise the number and lower the suite's value,
-which is the failure mode mutation testing is most often used to cause.
 
 ## What it does not do
 

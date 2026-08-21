@@ -10,7 +10,11 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator is being added.
+> validator has its entry point and its structural phase; its semantic phase —
+> validity window, audience, required attributes, identity cross-check,
+> signature integrity — is not written yet. **Do not spend an assertion on the
+> strength of `validateAssertion` returning valid in this build.** See
+> [Validating an assertion](#validating-an-assertion).
 
 ## The regional code vocabulary
 
@@ -79,6 +83,62 @@ Three omissions are deliberate and each is written down: no `saml:Issuer`, no
 none of them and its worked request carries none, but the RVE-1.a
 information-content table marks two of them required. Which reading governs
 RVE-1.b is `Q-006`.
+
+## Validating an assertion
+
+`validateAssertion` takes the raw bytes of a **bare `saml:Assertion` element**
+and returns a discriminated result.
+
+```ts
+import { validateAssertion } from 'rve-assertion';
+
+const result = validateAssertion(assertionBytes);
+if (!result.valid) {
+  for (const failure of result.failures) {
+    log.warn(failure.code, failure.detail, failure.regionalErrorCode);
+  }
+}
+```
+
+The input is bytes, not a string, and nothing here reserializes them: §4.6
+requires the assertion be spent exactly as the IAP returned it, and a round trip
+through a document model normalises whitespace, attribute order and namespace
+declarations — all of them inside what the region signed. The bytes handed in
+are the bytes the caller still holds afterwards.
+
+**Unwrapping is out of scope.** Reaching into a SOAP response to find the
+assertion, or into a `wsse:Security` header to find one being presented, is a
+transport concern, and transport is a layer this library does not own. A caller
+hands over the sub-document it already located; a whole response fails the root
+element check, and the failure says so.
+
+The result is a union rather than a boolean, so the compiler makes the caller
+handle the refusal. On the failure branch, `failures` is typed non-empty — an
+invalid result with nothing to show for it cannot be constructed. Each failure
+carries this library's own `code`, a human-readable `detail`, and the regional
+error code as `regionalErrorCode`. The regional code is an **annotation, not the
+failure's identity**: it exists so a local diagnosis and an IAP's report can be
+discussed in the same words, and `code` is what a caller switches on. Details
+are constant text and never quote the document — an assertion carries the
+operator's tax code, and a detail echoing what it found would put that into
+whatever logs the failure.
+
+**Two phases, and the first one stops.** The structural phase asks whether there
+is an assertion here at all: parseable, an assertion element at the root, the
+attributes §4.1.6.2.2 makes mandatory, and exactly one conditions element
+carrying its window. It reports **one** failure and runs nothing further, in
+both directions — it does not accumulate structural failures, and it does not
+let the semantic phase run. Unparseable bytes have no audience to compare and no
+signature to bind, so a list of later failures would report things missing only
+because the document is. The semantic phase is the one that runs to completion
+and reports every reason; it arrives with the tickets that give it something to
+check.
+
+Three refusals are stricter than the specification demands, each argued in
+`docs/spec-questions.md`: bytes are decoded as UTF-8 strictly rather than
+substituted through (`D-009`), a document a parser would have to recover from is
+refused rather than repaired (`D-010`), and a document type declaration is
+refused outright (`D-011`).
 
 ## Install and test
 

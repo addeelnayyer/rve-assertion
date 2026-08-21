@@ -11,12 +11,12 @@
  * whole set, and it is the remedy that resolves every reason at once.
  *
  * §3.1.1 is the reason a remedy is a value rather than prose. It describes the
- * audience case in exactly these terms — the client meets an error code, and
- * "generally these operations are transparent to the user and are performed
- * automatically depending on the error code generated (in the same way in which
- * the error is generated for an expired assertion, for example)". Automatic
- * recovery, driven by what the refusal was, is the behaviour the specification
- * expects of a client. This is that behaviour, derived once and typed.
+ * audience case in exactly these terms: the client meets an error code,
+ * re-requests naming the target service, and the operator never sees it — and
+ * it offers the expired assertion as the case this is already familiar from.
+ * Automatic recovery driven by what the refusal was is the behaviour the
+ * specification expects of a client. This is that behaviour, derived once and
+ * typed.
  *
  * ## Derived from a mapping, not from a ranking
  *
@@ -105,6 +105,21 @@ import type { ServicePolicy } from './service-policy.js';
  * `withAuthenticationLevel` is the level the next request must ask for, and is
  * required on `step-up-auth` for the same structural reason: a step-up that
  * named no level would be one a caller could not execute.
+ *
+ * ## On the names
+ *
+ * The four action strings are the ticket's own prototype verbatim, discriminant
+ * literals included — `step-up-auth` keeps its abbreviation, which the rest of
+ * this repository would spell out, because it is the value on the public
+ * surface and the specification-facing ticket is what named it.
+ *
+ * The payload fields do not: the prototype writes `withAuthLevel`, and this
+ * writes `withAuthenticationLevel`. That is not the same call. "Authentication
+ * level" is a glossary term (`CONTEXT.md`), and the repository already carries
+ * it spelled out in every neighbouring place a caller reads — `authLevel` here
+ * would be a synonym for a term the glossary pins, sitting beside
+ * `ServicePolicy.requiredAuthenticationLevel` and
+ * `ValidAssertion.authenticationLevel`.
  */
 export type Remedy =
   | { readonly action: 'fail-hard' }
@@ -130,7 +145,8 @@ type ResolvingAction = Exclude<Remedy['action'], 'fail-hard'>;
 /**
  * What each remedy resolves. **The single source for the whole derivation** —
  * a failure carries no remedy field, so there is nowhere else this could be
- * said and nowhere else to keep in step with.
+ * said and nowhere else to keep in step with. Each membership is argued in
+ * `docs/spec-questions.md` (D-025).
  *
  * Read each entry as a claim about a round trip, not as a severity:
  *
@@ -176,35 +192,39 @@ const RESOLVES: Readonly<Record<ResolvingAction, readonly AssertionFailureCode[]
 /**
  * The remedies the aggregate is chosen from, read off {@link RESOLVES} rather
  * than listed again, so that a remedy cannot be added to one and forgotten in
- * the other. The order is insertion order and the search does not depend on it.
+ * the other.
+ *
+ * Insertion order, and not a ranking — nothing reads it as one. While the
+ * resolved sets are comparable the fold below reaches the same answer whichever
+ * order they arrive in, and where they are not it still answers with a remedy
+ * that resolves every observed failure.
  */
 const RESOLVING_ACTIONS = Object.keys(RESOLVES) as readonly ResolvingAction[];
 
-/** Whether `action` resolves every one of `codes`. */
-function resolvesAll(action: ResolvingAction, codes: ReadonlySet<AssertionFailureCode>): boolean {
-  return [...codes].every((code) => RESOLVES[action].includes(code));
-}
-
 /**
- * Whether `action` sits at or below `other` in the order — everything `action`
- * resolves, `other` resolves too.
+ * Whether `action` resolves every one of `codes`.
  *
- * This is the whole of the ordering. There is no list of remedies in severity
- * order anywhere in this module, and adding a failure code to a remedy's set
- * moves that remedy in this relation rather than leaving a written order to
- * contradict it.
+ * Asked of two things, because they are one question. Handed the failures
+ * observed, it says whether this remedy covers the refusal. Handed another
+ * remedy's set, it says whether this remedy sits at or above that one — which
+ * is the whole of the ordering. There is no list of remedies in severity order
+ * anywhere in this module, and adding a code to a remedy's set moves that
+ * remedy in the order rather than leaving a written one to contradict it.
  */
-function subsumedBy(action: ResolvingAction, other: ResolvingAction): boolean {
-  return RESOLVES[action].every((code) => RESOLVES[other].includes(code));
+function resolves(action: ResolvingAction, codes: Iterable<AssertionFailureCode>): boolean {
+  return [...codes].every((code) => RESOLVES[action].includes(code));
 }
 
 /**
  * The single remedy that resolves every failure in `failures`, for an assertion
  * validated against `policy`.
  *
- * Module-internal: the validator is the only caller, and it puts the answer on
- * the refusal. A caller re-deriving one would need the failure list and the
- * policy it already handed over, to compute a value it already has.
+ * The validator calls it and puts the answer on the refusal, so a caller
+ * handling one validation has the remedy already and need not call this. It is
+ * on the public surface for the case the validator cannot serve: a caller
+ * merging failures from more than one source — this library's, and the codes an
+ * IAP or X-Service Provider returned in a fault of its own — which is one
+ * refusal to a user and must reach one remedy, not two.
  *
  * ## The step-up crosses a layer, and the contract is that it comes back
  *
@@ -224,18 +244,27 @@ export function deriveRemedy(
 ): Remedy {
   const codes = new Set(failures.map((failure) => failure.code));
 
-  // The least covering remedy: it covers, and every remedy that also covers
-  // resolves everything it resolves. Order-independent, so nothing here is a
-  // ranking — the sets decide.
-  const covering = RESOLVING_ACTIONS.filter((action) => resolvesAll(action, codes));
-  const least = covering.find((action) => covering.every((other) => subsumedBy(action, other)));
+  const covering = RESOLVING_ACTIONS.filter((action) => resolves(action, codes));
 
-  if (least === undefined) {
-    // Nothing covers, so fail-hard — which is the same thing as saying one of
-    // these failures is resolved by no remedy at all, since the sets form a
-    // chain. It carries nothing: see {@link Remedy}.
+  // Fail-hard first, and outside the order rather than on top of it. It
+  // resolves the empty set, so it can never be the least covering remedy and
+  // the fold below can never reach it — this is the only place it is decided.
+  // One failure that no remedy resolves empties this list whatever is beside
+  // it, which is what absorbing means. It carries nothing: see {@link Remedy}.
+  if (covering.length === 0) {
     return { action: 'fail-hard' };
   }
+
+  // The least of them. Folded rather than searched so that it is total, and so
+  // that it does not quietly depend on the sets forming a chain: keep whichever
+  // candidate the other resolves everything of, which is the one whose resolved
+  // set is contained in the other's. If two remedies ever became incomparable,
+  // this still answers with one that resolves every observed failure — where a
+  // search for a unique least element would answer fail-hard, which would be a
+  // lie about remedies that demonstrably resolve them.
+  const least = covering.reduce((best, action) =>
+    resolves(best, RESOLVES[action]) ? action : best,
+  );
 
   const withAudience = policy.audience;
   const withAuthenticationLevel = policy.requiredAuthenticationLevel;

@@ -4,17 +4,17 @@
  *
  * **Status: incomplete.** The structural phase, the structural signature
  * phase, the validity window, the audience, the attributes the calling service
- * requires, the identity cross-check and the remedy a refusal carries are here. So a `valid: true` result
- * from this build means *this document is shaped like an assertion, it carries
- * a signature that claims to cover it, the clock is inside its window, it is
- * scoped to the service it was checked against, it carries what that service
- * asked for, and it says one thing about who the operator is* — and nothing
- * more. It does **not** mean the signature was verified: nothing here verifies
- * one cryptographically unless the caller supplies a verifier, and the success
- * branch says so in a warning rather than leaving it to be assumed. Until the
- * remaining work lands, a caller must not read the success branch as permission
- * to spend the assertion. The README says the same thing where a reader will
- * meet it first.
+ * requires, the identity cross-check and the remedy a refusal carries are here.
+ * So a `valid: true` result from this build means *this document is shaped like
+ * an assertion, it carries a signature that claims to cover it, the clock is
+ * inside its window, it is scoped to the service it was checked against, it
+ * carries what that service asked for, and it says one thing about who the
+ * operator is* — and nothing more. It does **not** mean the signature was
+ * verified: nothing here verifies one cryptographically unless the caller
+ * supplies a verifier, and the success branch says so in a warning rather than
+ * leaving it to be assumed. Until the remaining work lands, a caller must not
+ * read the success branch as permission to spend the assertion. The README says
+ * the same thing where a reader will meet it first.
  *
  * ## What it is handed
  *

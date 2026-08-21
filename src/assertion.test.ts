@@ -4,10 +4,13 @@ import {
   RECOMMENDED_CLOCK_SKEW_MS,
   RECOMMENDED_FLIGHT_TIME_MS,
   validateAssertion,
+  type AssertionFailureCode,
   type AssertionTimeModel,
+  type AssertionValidationOptions,
 } from './assertion.js';
 import { ASSERTION_ATTRIBUTES } from './assertion-attributes.js';
 import { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
+import type { Remedy } from './remedy.js';
 import { TWO_FACTOR_AUTHENTICATION_LEVEL } from './request.js';
 import { servicePolicy, type ServicePolicy } from './service-policy.js';
 import { NO_SIGNATURE_VERIFICATION, type SignatureVerifier } from './signature.js';
@@ -1022,18 +1025,121 @@ describe('validateAssertion — the semantic phase reports every reason', () => 
 });
 
 describe('validateAssertion — the remedy', () => {
-  /** The refusal a failing assertion carries, or a failing assertion. */
+  const CONFIDENTIAL = servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
+  const ASKING_FOR_A_ROLE = servicePolicy({
+    audience: SERVICE,
+    requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE],
+  });
+  const REQUIRES_TWO_FACTOR = servicePolicy({
+    audience: SERVICE,
+    requiredAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
+  });
+
+  /** A validation that refused, or a failing assertion. */
   function refusal(
     input: Uint8Array,
     time: AssertionTimeModel = TIME,
     policy: ServicePolicy = POLICY,
+    options: AssertionValidationOptions = {},
   ) {
-    const result = validateAssertion(input, time, policy);
+    const result = validateAssertion(input, time, policy, options);
     if (result.valid) {
       throw new Error('expected the assertion to be refused');
     }
     return result;
   }
+
+  interface Refused {
+    readonly input: Uint8Array;
+    readonly time?: AssertionTimeModel;
+    readonly policy?: ServicePolicy;
+    readonly options?: AssertionValidationOptions;
+    readonly remedy: Remedy['action'];
+  }
+
+  /**
+   * One assertion refused for each way of being refused, and the remedy each
+   * one alone resolves to.
+   *
+   * A `Record` keyed by the failure-code union rather than a list, so that a
+   * code added to the validator fails to compile here until someone has said
+   * which remedy resolves it — the one question a new code must not leave open,
+   * since `src/remedy.ts` answering *nothing* for it is `fail-hard`, which is a
+   * claim rather than a default.
+   */
+  const REFUSALS: Readonly<Record<AssertionFailureCode, Refused>> = {
+    // Nothing this library can name resolves these: a document that is not an
+    // assertion, a signature that does not cover one, a clock that disagrees
+    // with the issuer's, or an IAP that resolved two identities.
+    malformed: { input: bytes('not a document'), remedy: 'fail-hard' },
+    'signature-absent': { input: bytes(assertionXml({ signature: '' })), remedy: 'fail-hard' },
+    'signature-malformed': {
+      input: bytes(assertionXml({ signature: signatureXml({ reference: referenceXml({ digestValue: '' }) }) })),
+      remedy: 'fail-hard',
+    },
+    'signature-not-bound': {
+      input: bytes(
+        assertionXml({ signature: signatureXml({ reference: referenceXml({ uri: '#elsewhere' }) }) }),
+      ),
+      remedy: 'fail-hard',
+    },
+    'signature-verification-failed': {
+      input: bytes(assertionXml()),
+      options: { verifySignature: () => 'not-verified' },
+      remedy: 'fail-hard',
+    },
+    'not-yet-valid': {
+      input: bytes(assertionXml()),
+      time: at(TIME, '2026-08-21T08:00:00Z'),
+      remedy: 'fail-hard',
+    },
+    'identity-mismatch': {
+      input: bytes(
+        assertionXml({
+          statement: statementXml(
+            attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, 'RSSMRA80A01H501U'),
+          ),
+        }),
+      ),
+      remedy: 'fail-hard',
+    },
+
+    // A fresh assertion is a round trip that exists, and age is the only thing
+    // asking the same question again can change.
+    expired: { input: bytes(assertionXml()), time: at(EXACT, NOT_ON_OR_AFTER), remedy: 'refresh' },
+
+    // §3.1.1's own recovery: ask again, naming this service.
+    'audience-mismatch': {
+      input: bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+      remedy: 'rerequest-scoped',
+    },
+    'audience-absent': {
+      input: bytes(assertionXml({ conditions: conditionsWith('') })),
+      policy: CONFIDENTIAL,
+      remedy: 'rerequest-scoped',
+    },
+    'attribute-missing': {
+      input: bytes(assertionXml()),
+      policy: ASKING_FOR_A_ROLE,
+      remedy: 'rerequest-scoped',
+    },
+
+    // Out of this layer, to the session that can acquire a second factor.
+    'authentication-level-not-attested': {
+      input: bytes(assertionXml()),
+      policy: REQUIRES_TWO_FACTOR,
+      remedy: 'step-up-auth',
+    },
+  };
+
+  it.each(Object.entries(REFUSALS))('resolves %s with the remedy that answers it', (code, refused) => {
+    const result = refusal(refused.input, refused.time, refused.policy, refused.options);
+
+    // The fixture is held to producing this one failure and no other, so that
+    // the remedy beside it is the remedy for the code the row names.
+    expect(result.failures.map((failure) => failure.code)).toEqual([code]);
+    expect(result.remedy.action).toBe(refused.remedy);
+  });
 
   it('answers an expired and wrongly scoped assertion with a scoped re-request, not a refresh', () => {
     // The case the derivation exists for. A refresh returns a fresh assertion
@@ -1056,50 +1162,6 @@ describe('validateAssertion — the remedy', () => {
     });
   });
 
-  it('answers an expired assertion that is scoped correctly with a refresh', () => {
-    // The same window failure, alone. The aggregate moves because the failure
-    // set moved, which is the whole of the ordering.
-    expect(refusal(bytes(assertionXml()), at(EXACT, NOT_ON_OR_AFTER)).remedy).toEqual({
-      action: 'refresh',
-      withAudience: SERVICE,
-      withAuthenticationLevel: undefined,
-    });
-  });
-
-  it('carries a remedy on a refusal from a phase that short-circuits', () => {
-    // The structural and signature phases return before the semantic one runs.
-    // A caller handling their refusals needs the same answer to the same
-    // question, and nothing about a document that is not an assertion is
-    // resolved by a round trip.
-    expect(refusal(bytes('not a document')).remedy).toEqual({ action: 'fail-hard' });
-    expect(refusal(bytes(assertionXml({ signature: '' }))).remedy).toEqual({
-      action: 'fail-hard',
-    });
-  });
-
-  it('lets one unresolvable failure absorb the remedy for the rest', () => {
-    // An identity mismatch beside an expired window. The expiry has a remedy
-    // and the mismatch has none, so there is no round trip that resolves both
-    // — and offering the one that resolves the expiry would send the caller
-    // after an assertion that fails the same way.
-    const result = refusal(
-      bytes(
-        assertionXml({
-          statement: statementXml(
-            attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, 'RSSMRA80A01H501U'),
-          ),
-        }),
-      ),
-      at(EXACT, NOT_ON_OR_AFTER),
-    );
-
-    expect(result.failures.map((failure) => failure.code).sort()).toEqual([
-      'expired',
-      'identity-mismatch',
-    ]);
-    expect(result.remedy).toEqual({ action: 'fail-hard' });
-  });
-
   it('carries the audience forward on a step-up, so resumption re-enters scoped', () => {
     // The escalation leaves this layer: the operator authenticates again with a
     // second factor, which is the session's work. It comes back to a re-request
@@ -1109,10 +1171,7 @@ describe('validateAssertion — the remedy', () => {
     const result = refusal(
       bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
       TIME,
-      servicePolicy({
-        audience: SERVICE,
-        requiredAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
-      }),
+      REQUIRES_TWO_FACTOR,
     );
 
     expect(result.failures.map((failure) => failure.code).sort()).toEqual([
@@ -1124,6 +1183,53 @@ describe('validateAssertion — the remedy', () => {
       withAudience: SERVICE,
       withAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
     });
+  });
+
+  it('lets one unresolvable failure absorb the remedy for the rest', () => {
+    // An identity mismatch beside an expired window. The expiry has a remedy
+    // and the mismatch has none, so there is no round trip that resolves both —
+    // and offering the one that resolves the expiry would send the caller after
+    // an assertion that fails the same way.
+    const result = refusal(REFUSALS['identity-mismatch'].input, at(EXACT, NOT_ON_OR_AFTER));
+
+    expect(result.failures.map((failure) => failure.code).sort()).toEqual([
+      'expired',
+      'identity-mismatch',
+    ]);
+    expect(result.remedy).toEqual({ action: 'fail-hard' });
+  });
+
+  it('threads the audience through every remedy that acts', () => {
+    for (const refused of Object.values(REFUSALS)) {
+      if (refused.remedy === 'fail-hard') {
+        continue;
+      }
+      const { remedy } = refusal(refused.input, refused.time, refused.policy, refused.options);
+
+      expect(remedy).toHaveProperty('withAudience', SERVICE);
+    }
+  });
+
+  it('asks a re-request for the level the service requires, and for none where it requires none', () => {
+    expect(
+      refusal(
+        bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+        TIME,
+        REQUIRES_TWO_FACTOR,
+      ).remedy,
+    ).toHaveProperty('withAuthenticationLevel', TWO_FACTOR_AUTHENTICATION_LEVEL);
+
+    expect(
+      refusal(bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) }))).remedy,
+    ).toHaveProperty('withAuthenticationLevel', undefined);
+  });
+
+  it('carries a remedy on a refusal from a phase that short-circuits', () => {
+    // The structural and signature phases return before the semantic one runs.
+    // A caller handling their refusals needs the same answer to the same
+    // question.
+    expect(refusal(bytes('not a document')).remedy).toEqual({ action: 'fail-hard' });
+    expect(refusal(bytes(assertionXml({ signature: '' }))).remedy).toEqual({ action: 'fail-hard' });
   });
 
   it('keeps the remedy off the failures, so the mapping has one source', () => {

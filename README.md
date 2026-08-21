@@ -316,6 +316,11 @@ failures, given an IAP that honours the request. A caller that executes one, is
 refused the same way, and executes it again is looping on its own choice.
 `unrecoverable` on a failure is the separate, stronger claim.
 
+`deriveRemedy` is exported for the one case the result cannot serve: a caller
+merging this library's failures with the regional error codes an IAP or
+X-Service Provider returned in a fault of its own. That is one refusal to a
+user, and it should reach one remedy rather than two.
+
 ### Structural signature integrity
 
 Named for what it does, which is more than checking that a signature is there.

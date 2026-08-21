@@ -12,7 +12,8 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 > regional code vocabulary and the request builder are in place. The assertion
 > validator has its structural phase, its structural signature phase, its
 > validity-window check, its audience check, the attributes the calling service
-> requires and the identity cross-check. **Do not spend an assertion on the
+> requires, the identity cross-check and the remedy derived from a refusal.
+> **Do not spend an assertion on the
 > strength of `validateAssertion` returning valid in this build**: no signature
 > is cryptographically verified unless the caller supplies a verifier, and the
 > success branch says so in a warning.
@@ -128,6 +129,20 @@ if (result.valid) {
   for (const failure of result.failures) {
     log.warn(failure.code, failure.detail, failure.regionalErrorCode, failure.unrecoverable);
   }
+  switch (result.remedy.action) {
+    case 'fail-hard':
+      return giveUp();
+    case 'refresh':
+    case 'rerequest-scoped':
+      return request({
+        audience: result.remedy.withAudience,
+        authenticationLevel: result.remedy.withAuthenticationLevel,
+      });
+    case 'step-up-auth':
+      // Out of this layer: the session re-authenticates the operator, and
+      // resumes into a re-request naming the audience it was handed.
+      return session.stepUp(result.remedy.withAuthenticationLevel, result.remedy.withAudience);
+  }
 }
 ```
 
@@ -188,6 +203,9 @@ is the absence of that claim rather than a promise that a retry will work. Detai
 carries the operator's tax code, and a detail echoing what it found would put
 that into whatever logs the failure.
 
+Beside the failures, and not on them, is `remedy`: the one thing to do about all
+of them.
+
 **Three phases, and the first two stop.** The structural phase asks whether
 there is an assertion here at all: parseable, an assertion element at the root,
 one assertion element in the whole document, the attributes §4.1.6.2.2 makes
@@ -218,6 +236,90 @@ carrying no time zone is refused rather than read in an assumed one, since two
 hosts in different zones would otherwise reach different verdicts about the same
 assertion (`D-012`). An explicit `+02:00` offset is accepted — it names the same
 instant a `Z` value would.
+
+### The remedy
+
+A refusal names every reason, and then names the **single** thing to do about
+all of them. Acting one reason at a time is the failure this exists to prevent:
+refresh, be refused for the audience, re-request, be refused for the
+authentication level — one round trip against a third-party IAP per reason, with
+a real chance of cycling between two of them forever.
+
+§3.1.1 is why this is a value rather than a paragraph. It describes the audience
+case in exactly these terms: the client meets an error code, re-requests naming
+the target service, and the operator never sees it — and it offers the expired
+assertion as the case that is already familiar. Automatic recovery driven by
+what the refusal was is the behaviour the specification expects of a client.
+
+```ts
+type Remedy =
+  | { action: 'fail-hard' }
+  | { action: 'refresh';          withAudience?: string; withAuthenticationLevel?: AuthenticationLevel }
+  | { action: 'rerequest-scoped'; withAudience:  string; withAuthenticationLevel?: AuthenticationLevel }
+  | { action: 'step-up-auth';     withAudience?: string; withAuthenticationLevel:  AuthenticationLevel };
+```
+
+**Subsumption is derived, not asserted.** `src/remedy.ts` declares, for each
+remedy, the set of failure codes that remedy resolves — each membership a claim
+about what one round trip can change, argued in `D-025`. Nothing declares an
+order. The aggregate is the *least* remedy whose set covers every observed
+failure, and the ordering that "escalating" refers to is read back out of those
+sets: one remedy precedes another exactly when everything the first resolves the
+second resolves too. Add a code to a set and the order moves with it.
+
+That is what makes the one-round-trip claim true rather than hopeful. Worked,
+for the two cases the tests pin:
+
+- *Expired **and** wrongly scoped.* A refresh returns a fresh assertion carrying
+  the same wrong audience, which fails again — a loop. A scoped re-request
+  returns one that is both fresh and correctly scoped. So a scoped re-request
+  subsumes a refresh, because its resolved set contains `expired`.
+- *Wrongly scoped **and** attesting no authentication level.* A scoped
+  re-request returns a correctly scoped assertion still lacking the level. The
+  step-up resolves both — but only because the escalation carries the audience
+  forward.
+
+**Fail-hard sits outside the order, not on top of it.** It resolves the empty
+set. Modelling it as the greatest remedy would have the aggregate claim it
+resolves everything beneath it, which is backwards. It is what a caller gets
+when no remedy covers, and one failure nothing resolves removes every candidate
+at once — which is what absorbing means. `malformed`, the four signature
+refusals, `not-yet-valid` and `identity-mismatch` are the failures no remedy
+resolves.
+
+**The audience threads through every branch that acts**, from the policy the
+assertion was validated against. On `rerequest-scoped` it is required, and that
+is the point: a scoped re-request cannot be constructed without the audience it
+must be scoped to. On the other two it is optional in the type — a refresh and a
+step-up are both defined without reference to a service — but nothing here
+derives one without an audience.
+
+**`step-up-auth` escalates out of the assertion layer.** This library names it;
+the session layer performs it, by re-authenticating the pediatrician inside the
+application with a second factor. Appendix A.5's ERR_00065 is the region's name
+for a service demanding one. What this layer owes the session layer is the
+audience, and what the session layer owes back is to return with it: resumption
+re-enters a re-request naming the same service, rather than starting over
+generically and meeting the audience refusal it had already got past.
+`withAudience` on the step-up is that cross-layer contract written into the
+payload. `withAuthenticationLevel` is required there, and where the service
+required no level at all — which happens, since an assertion attesting two
+levels attests none whatever the policy asked for — it names the one level the
+excerpt publishes (`D-026`).
+
+**A failure carries no remedy field**, so the mapping has exactly one source. A
+per-failure remedy would be a second copy of it to keep in step, and the
+interesting answer is about the set rather than about any one member of it.
+
+A remedy is not a promise. It names the round trip that *can* resolve the
+failures, given an IAP that honours the request. A caller that executes one, is
+refused the same way, and executes it again is looping on its own choice.
+`unrecoverable` on a failure is the separate, stronger claim.
+
+`deriveRemedy` is exported for the one case the result cannot serve: a caller
+merging this library's failures with the regional error codes an IAP or
+X-Service Provider returned in a fault of its own. That is one refusal to a
+user, and it should reach one remedy rather than two.
 
 ### Structural signature integrity
 

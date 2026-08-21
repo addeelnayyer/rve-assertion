@@ -1214,3 +1214,87 @@ The cost: an IAP that legitimately carried an advisory assertion inside
 `saml:Advice` would have its assertions refused. Nothing in the excerpt suggests
 the region does this, and the refusal names its own reason, so the failure is a
 loud question rather than a silent acceptance.
+
+### D-025 — A remedy resolves the failures a round trip can change, and nothing else
+
+**Citations.** §3.1.1 (a confidential service refusing a generic assertion, and
+the client re-requesting automatically on the error code); §4.2.5.2 (what an
+RVE-1.b request declares); Appendix A.5, Tables 9 to 12 (the codes a refusal
+carries); D-007; D-023.
+
+§3.1.1 is the only place the specification says what a client should *do* about
+a refusal, and it says it about one case: the client meets an error code, asks
+the authentication service again naming the target service, and the user never
+sees it. It offers the expired assertion as the case this is already familiar
+from. It says nothing about the other ten ways this library can refuse an
+assertion, and nothing at all about a refusal that names several reasons at
+once — which is the case that matters, since the validator's semantic phase
+reports every reason it finds.
+
+`src/remedy.ts` therefore declares, per remedy, the set of failure codes that
+remedy resolves, and derives the aggregate as the least remedy whose set covers
+every observed failure. Each membership is a claim about what one round trip can
+change, and the claims are:
+
+- A **refresh** asks the same question again, so it can only change the
+  assertion's age: `expired`, and nothing else. In particular not the audience —
+  a refresh of a wrongly scoped assertion returns a wrongly scoped assertion,
+  which is the loop §3.1.1's automatic recovery would otherwise fall into.
+- A **scoped re-request** names this service, so it resolves both audience
+  refusals and yields a fresh assertion on the way. `attribute-missing` is here
+  because a re-request is the only round trip that can change what an assertion
+  carries: §4.2.5.2 has the request declare what it wants, and §3.1.1 has the
+  IAP parametrise an assertion by the service it was asked for.
+- A **step-up** ends in that same re-request once the operator has reached the
+  level, so it resolves everything the re-request does and the level besides.
+- **`not-yet-valid`** is resolved by nothing. A refresh returns an assertion
+  whose window opens at the same distance from a clock that is still wrong, so a
+  retry loop does not outlast it; §4.1.6.2.2's window is the IAP's to write and
+  the clock is the caller's to fix.
+- **`malformed`**, the four signature refusals and **`identity-mismatch`** are
+  resolved by nothing either, for the reasons the failures themselves give.
+
+The basis is that a remedy the caller can execute and be refused for the same
+reason is worse than no remedy: it converts one refusal into a loop against a
+third party, which is the outcome §3.1.1's "transparent to the user" recovery
+makes most likely and least visible.
+
+The cost is that a remedy is a claim about the IAP as well as about the
+assertion. A re-request naming this service resolves an audience refusal only if
+the IAP is willing to scope an assertion that way, and a re-request declaring an
+attribute resolves a missing one only if the IAP will supply it. Where it will
+not, the caller has spent one round trip and meets the same refusal — at which
+point re-executing the same remedy is the caller's choice, not this library's.
+The stronger claim, that no round trip can help at all, is carried per failure
+as `unrecoverable`.
+
+### D-026 — A step-up names the two-factor level even where the service required none
+
+**Citations.** §4.1.6.2.2 (`authLevel`, and `urn:rve:authnL2` as the value it
+names for two-factor authentication); Appendix A.5, Table 12's ERR_00065
+(a service requiring two-factor authentication); D-007; D-023; D-025.
+
+The step-up remedy carries the authentication level the operator must reach, and
+it is not optional in the payload: a step-up naming no level is one a caller
+cannot execute. The level normally comes from the service policy — the caller
+said what this service requires, and that is what the re-request must ask for.
+
+But `authentication-level-not-attested` has a second cause. An assertion
+attesting two levels attests none, whatever the policy asked for (D-023), so the
+failure can arise against a service that required nothing at all, leaving the
+remedy with no level to name. It names `urn:rve:authnL2`, which §4.1.6.2.2 is
+explicit is the value for two-factor authentication, and which D-007 records as
+the only level the excerpt publishes.
+
+The basis is that the two sides are the same value today — `AuthenticationLevel`
+is a union of one — so the choice is free now and the structure is what matters
+later. Writing the service's own requirement first says which one wins the day
+the region publishes a second level: the service's, because a step-up to a level
+the service did not ask for is a second factor the operator did not need.
+
+The cost: on the self-contradicting-assertion path the remedy asks the operator
+for a second factor to work around what is most likely a defect in the IAP's
+assertion, which is heavier than the fault deserves. The alternative — splitting
+the failure code so the two causes could carry different remedies — would make
+`authentication-level-not-attested` two codes on the public surface for one
+question a caller asks, and the assertion still cannot be spent either way.

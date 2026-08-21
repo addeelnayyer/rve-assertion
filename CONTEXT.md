@@ -106,3 +106,12 @@ application performs.
 **Regional error code** — a code from the region's own vocabulary of failure
 reasons, reported by an IAP or an X-Service Provider. It is the vocabulary a
 support conversation with the region is conducted in.
+
+**Remedy** — the one action a caller takes to resolve a whole refusal: a
+refresh, a re-request scoped to the service being called, an escalation to
+second-factor authentication, or nothing that helps. "Remedy" is this library's
+vocabulary, not the specification's; §3.1.1 describes the behaviour — a client
+meeting an error code and re-requesting automatically, invisibly to the operator
+— without naming it. A remedy is derived from every reason an assertion was
+refused rather than from the first of them, so that a caller makes at most one
+further round trip and cannot loop.

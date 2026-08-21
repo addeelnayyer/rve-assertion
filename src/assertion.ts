@@ -4,17 +4,17 @@
  *
  * **Status: incomplete.** The structural phase, the structural signature
  * phase, the validity window, the audience, the attributes the calling service
- * requires and the identity cross-check are here. So a `valid: true` result
- * from this build means *this document is shaped like an assertion, it carries
- * a signature that claims to cover it, the clock is inside its window, it is
- * scoped to the service it was checked against, it carries what that service
- * asked for, and it says one thing about who the operator is* — and nothing
- * more. It does **not** mean the signature was verified: nothing here verifies
- * one cryptographically unless the caller supplies a verifier, and the success
- * branch says so in a warning rather than leaving it to be assumed. Until the
- * remaining work lands, a caller must not read the success branch as permission
- * to spend the assertion. The README says the same thing where a reader will
- * meet it first.
+ * requires, the identity cross-check and the remedy a refusal carries are here.
+ * So a `valid: true` result from this build means *this document is shaped like
+ * an assertion, it carries a signature that claims to cover it, the clock is
+ * inside its window, it is scoped to the service it was checked against, it
+ * carries what that service asked for, and it says one thing about who the
+ * operator is* — and nothing more. It does **not** mean the signature was
+ * verified: nothing here verifies one cryptographically unless the caller
+ * supplies a verifier, and the success branch says so in a warning rather than
+ * leaving it to be assumed. Until the remaining work lands, a caller must not
+ * read the success branch as permission to spend the assertion. The README says
+ * the same thing where a reader will meet it first.
  *
  * ## What it is handed
  *
@@ -62,6 +62,13 @@
  * audience, the attributes the service requires, and the operator's identity
  * held against itself.
  *
+ * ## Every refusal carries the one thing to do about it
+ *
+ * Reporting several reasons is only half an answer — a caller acting on them
+ * one at a time spends a round trip per reason. So a refusal from any of the
+ * three phases carries a single {@link Remedy}, derived in `src/remedy.ts` from
+ * the whole failure set, which resolves all of them at once.
+ *
  * ## The service is an argument too
  *
  * The audience, the attributes an assertion must carry and the authentication
@@ -104,6 +111,7 @@ import { ASSERTION_ATTRIBUTES, readAssertionAttributes } from './assertion-attri
 import type { AssertionAttributes } from './assertion-attributes.js';
 import { SAML_ASSERTION_NAMESPACE } from './namespaces.js';
 import { REGIONAL_ERROR_CODES, type RegionalErrorCode } from './regional-error-codes.js';
+import { deriveRemedy, type Remedy } from './remedy.js';
 import { audienceMatches, type ServicePolicy } from './service-policy.js';
 import {
   cryptographicVerification,
@@ -220,8 +228,10 @@ export interface AssertionFailure {
    * re-authentication can turn this assertion into a usable one, so a caller
    * that retries is looping against a third party. `false` is the absence of
    * that claim — *not established to be unrecoverable* — and not a promise that
-   * a retry will succeed. What to actually do about a failure is the remedy's
-   * to say, and the remedy is a later ticket's.
+   * a retry will succeed. What to actually *do* about a failure is not here at
+   * all: it is {@link InvalidAssertion.remedy}'s to say, derived from the whole
+   * failure set, and a remedy field beside each failure would be a second
+   * source for one mapping.
    */
   readonly unrecoverable: boolean;
 }
@@ -344,6 +354,21 @@ export interface ValidAssertion {
 export interface InvalidAssertion {
   readonly valid: false;
   readonly failures: readonly [AssertionFailure, ...AssertionFailure[]];
+
+  /**
+   * The one thing to do about all of them — see {@link Remedy}.
+   *
+   * Derived from the whole failure set rather than from the first failure or
+   * from a severity written down somewhere, so that executing it resolves every
+   * reason at once and the caller makes at most one further round trip. A
+   * caller acting on `failures[0]` alone would fix one reason, spend a round
+   * trip against a third-party IAP, and meet the next.
+   *
+   * Beside the failures rather than on each of them: `src/remedy.ts` holds one
+   * mapping from failure code to remedy, and a per-failure field would be a
+   * second copy of it to keep in step.
+   */
+  readonly remedy: Remedy;
 }
 
 /**
@@ -1080,6 +1105,20 @@ function checkIdentity(
 }
 
 /**
+ * A refusal, with the single remedy for everything in it.
+ *
+ * One place the remedy is attached, so that no refusal path can return a result
+ * without one — including the two phases that short-circuit, whose failures a
+ * caller has to act on just as much.
+ */
+function invalid(
+  failures: readonly [AssertionFailure, ...AssertionFailure[]],
+  policy: ServicePolicy,
+): InvalidAssertion {
+  return { valid: false, failures, remedy: deriveRemedy(failures, policy) };
+}
+
+/**
  * Validates the identity assertion in `assertion`, as the exact bytes the
  * Identity and Assertion Provider returned.
  *
@@ -1118,7 +1157,7 @@ export function validateAssertion(
 
   const structure = readStructure(assertion);
   if (!structure.read) {
-    return { valid: false, failures: [structure.failure] };
+    return invalid([structure.failure], policy);
   }
 
   // The signature phase, before the semantic one and short-circuiting like the
@@ -1126,7 +1165,7 @@ export function validateAssertion(
   // audience and a window nobody vouched for.
   const integrity = signatureIntegrity(structure.assertion, structure.id);
   if (!integrity.ok) {
-    return { valid: false, failures: [integrity.failure] };
+    return invalid([integrity.failure], policy);
   }
 
   const verification = cryptographicVerification(
@@ -1134,7 +1173,7 @@ export function validateAssertion(
     options.verifySignature ?? NO_SIGNATURE_VERIFICATION,
   );
   if (!verification.ok) {
-    return { valid: false, failures: [verification.failure] };
+    return invalid([verification.failure], policy);
   }
 
   // The semantic phase: every check runs, and every failure is reported.
@@ -1153,7 +1192,7 @@ export function validateAssertion(
     ...checkIdentity(structure.subjectIdentifier, attributes),
   ];
   if (first !== undefined) {
-    return { valid: false, failures: [first, ...rest] };
+    return invalid([first, ...rest], policy);
   }
 
   return {

@@ -39,6 +39,8 @@ export { NO_SIGNATURE_VERIFICATION } from './signature.js';
 export type { SignatureVerification, SignatureVerifier } from './signature.js';
 export { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
 export type { RegionalErrorCode } from './regional-error-codes.js';
+export { deriveRemedy } from './remedy.js';
+export type { Remedy } from './remedy.js';
 export { buildRve1bRequest } from './request-envelope.js';
 export {
   deriveMessageId,

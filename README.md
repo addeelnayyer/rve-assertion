@@ -10,11 +10,12 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator has its entry point and its structural phase; its semantic phase —
-> validity window, audience, required attributes, identity cross-check,
-> signature integrity — is not written yet. **Do not spend an assertion on the
-> strength of `validateAssertion` returning valid in this build.** See
-> [Validating an assertion](#validating-an-assertion).
+> validator has its entry point, its structural phase and its structural
+> signature phase; its semantic phase — validity window, audience, required
+> attributes, identity cross-check — is not written yet, and no signature is
+> cryptographically verified unless the caller supplies a verifier. **Do not
+> spend an assertion on the strength of `validateAssertion` returning valid in
+> this build.** See [Validating an assertion](#validating-an-assertion).
 
 ## The regional code vocabulary
 
@@ -97,6 +98,10 @@ if (!result.valid) {
   for (const failure of result.failures) {
     log.warn(failure.code, failure.detail, failure.regionalErrorCode);
   }
+} else {
+  for (const warning of result.warnings) {
+    log.info(warning.code, warning.detail);
+  }
 }
 ```
 
@@ -123,25 +128,83 @@ are constant text and never quote the document — an assertion carries the
 operator's tax code, and a detail echoing what it found would put that into
 whatever logs the failure.
 
-**Two phases, and the first one stops.** The structural phase asks whether there
-is an assertion here at all: parseable, an assertion element at the root, the
-attributes §4.1.6.2.2 makes mandatory, and exactly one each of the elements it
-requires — the issuer, the subject, and the conditions carrying the validity
-window. The signature is mandatory too and is checked elsewhere, because its
-absence and its being malformed are different regional errors and this phase has
-one code to report. It reports **one** failure and runs nothing further, in
-both directions — it does not accumulate structural failures, and it does not
-let the semantic phase run. Unparseable bytes have no audience to compare and no
-signature to bind, so a list of later failures would report things missing only
-because the document is. The semantic phase is the one that runs to completion
+**Three phases, and the first two stop.** The structural phase asks whether
+there is an assertion here at all: parseable, an assertion element at the root,
+one assertion element in the whole document, the attributes §4.1.6.2.2 makes
+mandatory, and exactly one each of the elements it requires — the issuer, the
+subject, and the conditions carrying the validity window. The signature phase
+asks whether the signature covers this assertion. Each reports **one** failure
+and runs nothing further. The semantic phase is the one that runs to completion
 and reports every reason; it arrives with the tickets that give it something to
 check.
 
-Three refusals are stricter than the specification demands, each argued in
+A short-circuit is not a ranking of severity. It is the claim that a later check
+cannot mean anything until an earlier one holds: unparseable bytes have no
+audience to compare and no window to check, and an assertion whose signature
+covers something else has an audience nobody vouched for — reporting that the
+audience was wrong too would invite a caller to fix the audience.
+
+Four refusals are stricter than the specification demands, each argued in
 `docs/spec-questions.md`: bytes are decoded as UTF-8 strictly rather than
 substituted through (`D-009`), a document a parser would have to recover from is
-refused rather than repaired (`D-010`), and a document type declaration is
-refused outright (`D-011`).
+refused rather than repaired (`D-010`), a document type declaration is refused
+outright (`D-011`), and a document carrying more than one assertion element is
+refused (`D-012`).
+
+### Structural signature integrity
+
+Named for what it does, which is more than checking that a signature is there.
+§4.1.6.2.2 requires the signature's single `ds:Reference` to name the
+assertion's **own** identifier, prefixed with a hash, and that binding is the
+part that matters: a signature element proves only that something was signed by
+someone, while the reference is what says the something is this assertion. A
+validator that checked presence alone would accept a genuine signature lifted
+from a real assertion and pasted into a forged one. That is signature wrapping,
+and two checks here defeat it — the reference must name this assertion's
+identifier, and the document must carry exactly one assertion element, so there
+is no second element for a reference to have been about.
+
+Failures are distinguished rather than lumped together, because their remedies
+differ. `signature-absent` is an IAP that did not sign (`ERR_00053`),
+`signature-malformed` is a signature this library could not read (`ERR_00012`),
+and `signature-not-bound` is a signature covering something else — the shape of
+an attack, and a reasonable thing to alert on rather than log.
+
+A deprecated signature or digest algorithm is **not** a refusal. §4.1.6.2.2
+attests SHA-1 in both slots and deprecates it, and then signs its own worked
+assertion with it; refusing would refuse a document the region permits and
+demonstrates. It arrives instead as a warning on the success branch, so a caller
+with a policy against SHA-1 can enforce one without this library imposing that
+policy on callers who cannot yet afford it. Accepting it in code while calling
+it a risk is the tension `Q-008` exists to reconcile. An algorithm *outside* the
+attested pairs is refused.
+
+### Cryptographic verification is a seam, not a feature
+
+**This library does not verify signatures.** It computes no digest and checks no
+signature value, because verification needs a key, a trust decision about that
+key and a canonicalisation implementation — and there is no single regional
+issuer to hold a key for; there is one per AULSS.
+
+The seam is `verifySignature`, a `SignatureVerifier`: it is handed the caller's
+exact bytes, since that is what a signature covers, and answers `verified`,
+`not-verified` or `not-attempted`. Three answers rather than a boolean, because
+*nothing checked* and *checked and bad* are different claims. The default,
+`NO_SIGNATURE_VERIFICATION`, answers `not-attempted` — and the success branch
+then carries a `signature-not-cryptographically-verified` warning, so the
+limitation travels with the result instead of living only in this README.
+
+```ts
+const result = validateAssertion(assertionBytes, {
+  verifySignature: (bytes) => (myXmlDsigVerifier.verify(bytes) ? 'verified' : 'not-verified'),
+});
+```
+
+A verifier that answers `not-verified` turns the result into a refusal carrying
+`signature-verification-failed`. The seam is synchronous, which is a constraint
+worth naming: a verifier needing a key must hold its trust material before it is
+called, rather than reaching for the network on the request path of a clinician
+waiting for a record.
 
 ## Install and test
 
@@ -161,7 +224,9 @@ npm run typecheck   # tsc --noEmit
 
 It performs no network I/O, holds no cache, manages no tenant configuration, and
 does not cryptographically verify signatures. Each of those is a seam it exposes
-for the layer that owns it, rather than an omission.
+for the layer that owns it, rather than an omission — for signatures, the seam
+is `verifySignature` and the omission is reported in the result itself. See
+[Cryptographic verification is a seam, not a feature](#cryptographic-verification-is-a-seam-not-a-feature).
 
 ## Dependencies
 

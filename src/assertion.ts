@@ -2,13 +2,14 @@
  * The assertion validator — §4.1.6.2.2, which §4.2.6 makes RVE-1.b's response
  * structure by reference.
  *
- * **Status: the structural phase only.** The semantic phase — validity window,
- * audience, required attributes, identity cross-check, signature integrity —
- * is not here yet, so a `valid: true` result from this build means *this
- * document is shaped like an assertion*, and nothing more. Until the remaining
- * work lands, a caller must not read the success branch as permission to spend
- * the assertion. The README says the same thing where a reader will meet it
- * first.
+ * **Status: the structural and signature phases.** The semantic phase —
+ * validity window, audience, required attributes, identity cross-check — is not
+ * here yet, so a `valid: true` result from this build means *this document is
+ * shaped like an assertion and carries a signature that claims to cover it*,
+ * and nothing more. Nothing here verifies that signature cryptographically
+ * unless the caller supplies something that does. Until the remaining work
+ * lands, a caller must not read the success branch as permission to spend the
+ * assertion. The README says the same thing where a reader will meet it first.
  *
  * ## What it is handed
  *
@@ -24,24 +25,29 @@
  * signed. So the bytes the caller passes are the bytes the caller still holds
  * afterwards: this module reads them and hands back nothing derived from them.
  *
- * ## Two phases, and why the first one stops
+ * ## Three phases, and why the first two stop
  *
- * The structural phase asks whether there is an assertion here at all:
- * parseable, an assertion element at the root, the attributes §4.1.6.2.2 makes
- * mandatory, and exactly one each of the elements it requires — the issuer, the
- * subject, and the conditions carrying the validity window. It reports one
- * failure and stops, in both directions — it does not accumulate structural
- * failures, and it does not let the semantic phase run. Neither would be worth
- * anything: a document that failed to parse has no audience to compare, no
- * window to check and no signature to bind, so every later check would report a
- * missing thing that is missing only because the document is.
+ * The **structural phase** asks whether there is an assertion here at all:
+ * parseable, an assertion element at the root, one assertion element in the
+ * whole document, the attributes §4.1.6.2.2 makes mandatory, and exactly one
+ * each of the elements it requires — the issuer, the subject, and the
+ * conditions carrying the validity window. It reports one failure and stops.
  *
- * The signature is mandatory too and is deliberately not checked here: §4.1.6.2.2
- * makes it an element like the others, but its absence and its being malformed
- * map to different regional error codes, and this phase has one code to report.
+ * The **signature phase** (`signature.ts`) asks whether the signature covers
+ * this assertion: present, built of the elements §4.1.6.2.2 names, and carrying
+ * exactly one reference naming the assertion's own identifier. It reports one
+ * failure and stops too, and for the same reason the structural phase does — an
+ * assertion whose signature does not bind to it has no content worth an
+ * opinion. Reporting that its audience was also wrong would invite a caller to
+ * fix the audience.
  *
- * The semantic phase — the one that runs to completion and reports every
+ * The **semantic phase** — the one that runs to completion and reports every
  * failure — arrives with the tickets that give it something to check.
+ *
+ * A short-circuit is not a ranking of severity. It is the claim that a later
+ * check cannot mean anything until an earlier one holds: a document that failed
+ * to parse has no audience to compare and no window to check, and a document
+ * whose signature covers something else has an audience nobody vouched for.
  */
 
 import { DOMParser, onErrorStopParsing } from '@xmldom/xmldom';
@@ -49,6 +55,13 @@ import type { Document, Element } from '@xmldom/xmldom';
 
 import { SAML_ASSERTION_NAMESPACE } from './namespaces.js';
 import { REGIONAL_ERROR_CODES, type RegionalErrorCode } from './regional-error-codes.js';
+import {
+  cryptographicVerification,
+  NO_SIGNATURE_VERIFICATION,
+  signatureIntegrity,
+  type SignatureVerifier,
+} from './signature.js';
+import { attribute, childElements } from './xml.js';
 
 /** The local name of the element an assertion is — §4.1.6.2.2. */
 const ASSERTION_ELEMENT = 'Assertion';
@@ -66,12 +79,20 @@ const SAML_VERSION = '2.0';
  * an annotation for the support conversation, not the identity of the failure —
  * see {@link AssertionFailure}.
  *
- * One member today, because the structural phase has one verdict to reach: a
- * document either is an assertion or is not one. `malformed` covers every way
- * of not being one, deliberately, since the remedy for all of them is the same
- * and it is not a remedy this library can name.
+ * `malformed` covers every way of not being an assertion at all, deliberately,
+ * since the remedy for all of them is the same and it is not a remedy this
+ * library can name. The signature codes are separate from it and from each
+ * other because their remedies differ: an unsigned assertion is an IAP that did
+ * not sign, a malformed signature is an IAP defect worth reporting to the
+ * AULSS, and a signature bound to something else is the shape of an attack and
+ * may deserve an alert rather than a log line.
  */
-export type AssertionFailureCode = 'malformed';
+export type AssertionFailureCode =
+  | 'malformed'
+  | 'signature-absent'
+  | 'signature-malformed'
+  | 'signature-not-bound'
+  | 'signature-verification-failed';
 
 /**
  * One reason an assertion was refused.
@@ -98,14 +119,40 @@ export interface AssertionFailure {
 }
 
 /**
+ * Something the caller should know about an assertion this library accepted.
+ *
+ * Not a failure and not a soft one. A warning never contributes to a refusal
+ * and carries no regional error code, because the region did not refuse
+ * anything either — every warning here describes a document the specification
+ * permits. It exists so that a caller can decide, with its own policy, whether
+ * to keep accepting what the specification currently allows.
+ */
+export type AssertionWarningCode =
+  | 'deprecated-signature-algorithm'
+  | 'deprecated-digest-algorithm'
+  | 'signature-not-cryptographically-verified';
+
+/** One thing worth knowing about an accepted assertion. */
+export interface AssertionWarning {
+  readonly code: AssertionWarningCode;
+  readonly detail: string;
+}
+
+/**
  * An assertion this library found no fault with.
  *
- * Carries no payload yet. The operator's tax code, the audiences, the
- * authentication level and the usable-until deadline are the semantic phase's
- * to report, and it does not exist yet — see the module comment.
+ * The operator's tax code, the audiences, the authentication level and the
+ * usable-until deadline are the semantic phase's to report, and it does not
+ * exist yet — see the module comment.
+ *
+ * `warnings` is where an accepted assertion says what was accepted about it. In
+ * this build it is never empty unless the caller supplied a verifier that
+ * verified, because the absence of cryptographic verification is itself
+ * reported here rather than left as an omission a caller has to know about.
  */
 export interface ValidAssertion {
   readonly valid: true;
+  readonly warnings: readonly AssertionWarning[];
 }
 
 /**
@@ -130,6 +177,18 @@ export interface InvalidAssertion {
  * retry loop or a silently accepted assertion.
  */
 export type AssertionValidation = ValidAssertion | InvalidAssertion;
+
+/**
+ * What a caller can supply to the validator beyond the assertion itself.
+ *
+ * One seam so far. Cryptographic verification needs a key, a trust decision
+ * about that key and a canonicalisation implementation, none of which this
+ * library holds — see {@link SignatureVerifier}. Omitting it is supported and
+ * is the default, and the result says plainly that it happened.
+ */
+export interface AssertionValidationOptions {
+  readonly verifySignature?: SignatureVerifier;
+}
 
 /** A structural refusal: one failure, always, and always the same code. */
 function malformed(detail: string): AssertionFailure {
@@ -185,35 +244,9 @@ function parse(source: string): Document | undefined {
   }
 }
 
-/** `Node.ELEMENT_NODE`, named rather than written as a bare 1. */
-const ELEMENT_NODE = 1;
-
 /** The direct children of `element` with this SAML local name. */
 function samlChildren(element: Element, localName: string): readonly Element[] {
-  const children: Element[] = [];
-  for (const node of Array.from(element.childNodes)) {
-    if (node.nodeType !== ELEMENT_NODE) {
-      continue;
-    }
-    const child = node as Element;
-    if (child.namespaceURI === SAML_ASSERTION_NAMESPACE && child.localName === localName) {
-      children.push(child);
-    }
-  }
-  return children;
-}
-
-/**
- * The value of `name` on `element`, or `undefined` when it is absent.
- *
- * A blank value counts as absent. An `ID=""` is not an identifier the signature
- * reference can be bound to, and an empty `NotOnOrAfter` is not a time — so
- * treating the two cases alike costs a caller nothing and saves every check
- * downstream from having to ask twice.
- */
-function attribute(element: Element, name: string): string | undefined {
-  const value = element.getAttribute(name);
-  return value === null || value.trim().length === 0 ? undefined : value;
+  return childElements(element, SAML_ASSERTION_NAMESPACE, localName);
 }
 
 /**
@@ -236,7 +269,8 @@ const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
  *
  * `ds:Signature` is mandatory too and is deliberately not here: its absence and
  * its being malformed map to different regional error codes, so it is checked
- * where that distinction can be drawn rather than collapsed into `malformed`.
+ * in `signature.ts`, where that distinction can be drawn rather than collapsed
+ * into `malformed`.
  *
  * Presence only. Whether the subject names the same operator as the
  * responsible-party attribute, and whether the issuer is one this caller
@@ -245,28 +279,35 @@ const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
 const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as const;
 
 /**
- * Names the first reason `assertion` is not an assertion, or `undefined` when
- * it is one.
+ * What the structural phase hands the phases after it: a refusal, or the
+ * assertion element and the identifier the signature has to be bound to.
+ *
+ * The identifier travels separately because the signature phase compares
+ * against it and would otherwise have to re-read an attribute this phase has
+ * already established is present and non-blank. Reading it twice is a second
+ * chance to read it differently.
+ */
+type Structure =
+  | { readonly failure: AssertionFailure }
+  | { readonly assertion: Element; readonly id: string };
+
+/**
+ * Names the first reason `assertion` is not an assertion, or hands on the
+ * element when it is one.
  *
  * The checks run in the order a reader would ask the questions — is it a
  * document, is it *this* document, does it carry what the document must carry —
- * and the first one that fails ends the phase. Ordering them is not a ranking
- * of severity: a later check cannot mean anything until the earlier ones hold.
- *
- * Returns the failure alone, and not the parsed document beside it, because
- * nothing yet reads a parsed document. The semantic phase is what needs one
- * carried forward, and it can widen this return type when it exists — a
- * structure built here now would be five fields no test could reach.
+ * and the first one that fails ends the phase.
  */
-function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined {
+function structure(assertion: Uint8Array): Structure {
   const source = decodeUtf8(assertion);
   if (source === undefined) {
-    return malformed('the assertion bytes are not valid UTF-8.');
+    return { failure: malformed('the assertion bytes are not valid UTF-8.') };
   }
 
   const document = parse(source);
   if (document === undefined) {
-    return malformed('the assertion bytes are not well-formed XML.');
+    return { failure: malformed('the assertion bytes are not well-formed XML.') };
   }
 
   // A document type declaration is refused rather than ignored. No assertion
@@ -275,7 +316,9 @@ function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined 
   // element tree says what the bytes say is before reading the element tree.
   // Argued in `docs/spec-questions.md` (D-011).
   if (document.doctype !== null) {
-    return malformed('the assertion carries a document type declaration, which is refused.');
+    return {
+      failure: malformed('the assertion carries a document type declaration, which is refused.'),
+    };
   }
 
   const element = document.documentElement;
@@ -287,18 +330,36 @@ function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined 
     // The input contract, restated where it is broken: this is the check a
     // caller that handed over a whole SOAP response fails, and the message has
     // to be the one that tells them so.
-    return malformed(
-      "the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller's.",
-    );
+    return {
+      failure: malformed(
+        "the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller's.",
+      ),
+    };
+  }
+
+  // One assertion in the whole document, not merely one at the root. SAML
+  // permits an assertion to carry others inside `saml:Advice`, and this library
+  // refuses that — a second assertion anywhere in the tree is a second element
+  // a signature reference could have been pointing at, and the point of the
+  // reference check in `signature.ts` is that there is exactly one thing the
+  // signature can be about. Refusing the whole document is cheaper and more
+  // certain than reasoning about which nested assertions are harmless.
+  // Argued in `docs/spec-questions.md` (D-012).
+  if (document.getElementsByTagNameNS(SAML_ASSERTION_NAMESPACE, ASSERTION_ELEMENT).length !== 1) {
+    return {
+      failure: malformed(
+        'the document carries more than one Assertion element. Exactly one is accepted, so that there is exactly one element a signature reference can be about.',
+      ),
+    };
   }
 
   if (attribute(element, 'Version') !== SAML_VERSION) {
-    return malformed(`the assertion does not declare Version "${SAML_VERSION}".`);
+    return { failure: malformed(`the assertion does not declare Version "${SAML_VERSION}".`) };
   }
 
   const absentAttribute = firstAbsent(element, REQUIRED_ASSERTION_ATTRIBUTES);
   if (absentAttribute !== undefined) {
-    return malformed(`the assertion carries no ${absentAttribute} attribute.`);
+    return { failure: malformed(`the assertion carries no ${absentAttribute} attribute.`) };
   }
 
   // Exactly one of each, not at least one. A second Conditions element would
@@ -306,7 +367,7 @@ function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined 
   // is exactly what a document that wants to be read two ways relies on.
   for (const name of REQUIRED_ASSERTION_ELEMENTS) {
     if (samlChildren(element, name).length !== 1) {
-      return malformed(`the assertion does not carry exactly one ${name} element.`);
+      return { failure: malformed(`the assertion does not carry exactly one ${name} element.`) };
     }
   }
 
@@ -315,17 +376,28 @@ function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined 
     // Unreachable: the loop above established there is exactly one. Written as
     // a return rather than an assertion so that the compiler's narrowing and
     // the runtime's behaviour agree without a cast.
-    return malformed(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
+    return {
+      failure: malformed(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`),
+    };
   }
 
   const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
   if (absentConditionsAttribute !== undefined) {
-    return malformed(
-      `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
-    );
+    return {
+      failure: malformed(
+        `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
+      ),
+    };
   }
 
-  return undefined;
+  const id = attribute(element, 'ID');
+  if (id === undefined) {
+    // Unreachable: ID is one of the required attributes checked above. Written
+    // as a return for the same reason the Conditions case above is.
+    return { failure: malformed('the assertion carries no ID attribute.') };
+  }
+
+  return { assertion: element, id };
 }
 
 /**
@@ -340,17 +412,36 @@ function structuralFailure(assertion: Uint8Array): AssertionFailure | undefined 
  * Never mutates `assertion` and never reserialises it. The caller keeps the
  * bytes it will spend.
  *
- * **Incomplete — see the module comment.** Only the structural phase runs, so
- * this does not yet establish that an assertion is in date, correctly scoped,
- * carries the attributes a service requires, or is signed at all.
+ * **Incomplete — see the module comment.** The structural and signature phases
+ * run, so this does not yet establish that an assertion is in date, correctly
+ * scoped, or carries the attributes a service requires. It establishes that the
+ * signature claims to cover this assertion; whether it actually does is the
+ * caller's `verifySignature` to say, and the success branch carries a warning
+ * whenever nothing said it.
  */
-export function validateAssertion(assertion: Uint8Array): AssertionValidation {
-  const structural = structuralFailure(assertion);
-  if (structural !== undefined) {
-    return { valid: false, failures: [structural] };
+export function validateAssertion(
+  assertion: Uint8Array,
+  options: AssertionValidationOptions = {},
+): AssertionValidation {
+  const structural = structure(assertion);
+  if ('failure' in structural) {
+    return { valid: false, failures: [structural.failure] };
   }
 
-  // The semantic phase runs here, over the parsed document this phase will hand
-  // it, and reports every failure rather than the first.
-  return { valid: true };
+  const integrity = signatureIntegrity(structural.assertion, structural.id);
+  if (!integrity.ok) {
+    return { valid: false, failures: [integrity.failure] };
+  }
+
+  const verification = cryptographicVerification(
+    assertion,
+    options.verifySignature ?? NO_SIGNATURE_VERIFICATION,
+  );
+  if (!verification.ok) {
+    return { valid: false, failures: [verification.failure] };
+  }
+
+  // The semantic phase runs here, over the parsed document the structural phase
+  // hands it, and reports every failure rather than the first.
+  return { valid: true, warnings: [...integrity.warnings, ...verification.warnings] };
 }

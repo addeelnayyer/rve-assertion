@@ -13,15 +13,21 @@ export {
   SOAP_ENVELOPE_NAMESPACE,
   WS_ADDRESSING_NAMESPACE,
   WS_SECURITY_SECEXT_NAMESPACE,
+  XML_SIGNATURE_NAMESPACE,
 } from './namespaces.js';
 export { validateAssertion } from './assertion.js';
 export type {
   AssertionFailure,
   AssertionFailureCode,
   AssertionValidation,
+  AssertionValidationOptions,
+  AssertionWarning,
+  AssertionWarningCode,
   InvalidAssertion,
   ValidAssertion,
 } from './assertion.js';
+export { NO_SIGNATURE_VERIFICATION } from './signature.js';
+export type { SignatureVerification, SignatureVerifier } from './signature.js';
 export { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
 export type { RegionalErrorCode } from './regional-error-codes.js';
 export { buildRve1bRequest } from './request-envelope.js';

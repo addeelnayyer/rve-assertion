@@ -106,8 +106,11 @@ export function readAssertionAttributes(assertion: Element): AssertionAttributes
 
   for (const statement of samlChildren(assertion, ATTRIBUTE_STATEMENT_ELEMENT)) {
     for (const attribute of samlChildren(statement, ATTRIBUTE_ELEMENT)) {
-      const name = attribute.getAttribute(NAME_ATTRIBUTE);
-      if (name === null || name.length === 0) {
+      // Blank counts as absent, as it does everywhere else this library reads
+      // an attribute: a name of no characters names nothing, and a policy
+      // cannot ask for it.
+      const name = attribute.getAttribute(NAME_ATTRIBUTE)?.trim();
+      if (name === undefined || name.length === 0) {
         continue;
       }
 

@@ -347,16 +347,33 @@ const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', SUBJECT_ELEMENT, CONDITIONS_ELEME
 
 /**
  * What the structural phase hands the semantic phase: the assertion element,
- * and the one identifier the subject carries.
+ * the validity-window element it established there is exactly one of, and the
+ * one identifier the subject carries.
  *
  * The subject identifier is read here rather than later because §4.1.6.2.2
  * makes the subject carry it and there is no second place to look — an
  * assertion without one is not an assertion that failed a check, it is a
- * document that cannot say who it is about.
+ * document that cannot say who it is about. The conditions element travels for
+ * the same reason: this phase already established there is exactly one, and a
+ * later phase that went looking again would have to have an opinion about
+ * finding none.
  */
-interface StructuralAssertion {
+interface AssertionStructure {
+  readonly structural: true;
   readonly assertion: Element;
+  readonly conditions: Element;
   readonly subjectIdentifier: string;
+}
+
+/**
+ * The structural phase's answer, tagged rather than told apart by shape — the
+ * same discrimination {@link AssertionValidation} uses, for the same reason.
+ */
+type StructuralResult = AssertionStructure | { readonly structural: false; readonly failure: AssertionFailure };
+
+/** A structural refusal, in the shape {@link readStructure} returns. */
+function refused(failure: AssertionFailure): StructuralResult {
+  return { structural: false, failure };
 }
 
 /**
@@ -368,15 +385,15 @@ interface StructuralAssertion {
  * and the first one that fails ends the phase. Ordering them is not a ranking
  * of severity: a later check cannot mean anything until the earlier ones hold.
  */
-function structural(assertion: Uint8Array): StructuralAssertion | AssertionFailure {
+function readStructure(assertion: Uint8Array): StructuralResult {
   const source = decodeUtf8(assertion);
   if (source === undefined) {
-    return malformed('the assertion bytes are not valid UTF-8.');
+    return refused(malformed('the assertion bytes are not valid UTF-8.'));
   }
 
   const document = parse(source);
   if (document === undefined) {
-    return malformed('the assertion bytes are not well-formed XML.');
+    return refused(malformed('the assertion bytes are not well-formed XML.'));
   }
 
   // A document type declaration is refused rather than ignored. No assertion
@@ -385,7 +402,9 @@ function structural(assertion: Uint8Array): StructuralAssertion | AssertionFailu
   // element tree says what the bytes say is before reading the element tree.
   // Argued in `docs/spec-questions.md` (D-011).
   if (document.doctype !== null) {
-    return malformed('the assertion carries a document type declaration, which is refused.');
+    return refused(
+      malformed('the assertion carries a document type declaration, which is refused.'),
+    );
   }
 
   const element = document.documentElement;
@@ -397,18 +416,20 @@ function structural(assertion: Uint8Array): StructuralAssertion | AssertionFailu
     // The input contract, restated where it is broken: this is the check a
     // caller that handed over a whole SOAP response fails, and the message has
     // to be the one that tells them so.
-    return malformed(
-      "the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller's.",
+    return refused(
+      malformed(
+        "the root element is not a SAML 2.0 Assertion. The validator is handed the bare assertion element; unwrapping a response or a security header is the caller's.",
+      ),
     );
   }
 
   if (attribute(element, 'Version') !== SAML_VERSION) {
-    return malformed(`the assertion does not declare Version "${SAML_VERSION}".`);
+    return refused(malformed(`the assertion does not declare Version "${SAML_VERSION}".`));
   }
 
   const absentAttribute = firstAbsent(element, REQUIRED_ASSERTION_ATTRIBUTES);
   if (absentAttribute !== undefined) {
-    return malformed(`the assertion carries no ${absentAttribute} attribute.`);
+    return refused(malformed(`the assertion carries no ${absentAttribute} attribute.`));
   }
 
   // Exactly one of each, not at least one. A second Conditions element would
@@ -416,7 +437,7 @@ function structural(assertion: Uint8Array): StructuralAssertion | AssertionFailu
   // is exactly what a document that wants to be read two ways relies on.
   for (const name of REQUIRED_ASSERTION_ELEMENTS) {
     if (samlChildren(element, name).length !== 1) {
-      return malformed(`the assertion does not carry exactly one ${name} element.`);
+      return refused(malformed(`the assertion does not carry exactly one ${name} element.`));
     }
   }
 
@@ -426,13 +447,17 @@ function structural(assertion: Uint8Array): StructuralAssertion | AssertionFailu
     // Unreachable: the loop above established there is exactly one of each.
     // Written as a return rather than an assertion so that the compiler's
     // narrowing and the runtime's behaviour agree without a cast.
-    return malformed('the assertion does not carry exactly one Subject and Conditions element.');
+    return refused(
+      malformed('the assertion does not carry exactly one Subject and Conditions element.'),
+    );
   }
 
   const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
   if (absentConditionsAttribute !== undefined) {
-    return malformed(
-      `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
+    return refused(
+      malformed(
+        `the assertion's ${CONDITIONS_ELEMENT} carries no ${absentConditionsAttribute} attribute.`,
+      ),
     );
   }
 
@@ -443,28 +468,27 @@ function structural(assertion: Uint8Array): StructuralAssertion | AssertionFailu
     // the success branch can report one from — so a subject that carries no
     // identifier, or two, is a document that cannot say who it is about rather
     // than one that fails a check.
-    return malformed(
-      `the assertion's ${SUBJECT_ELEMENT} does not carry exactly one ${NAME_ID_ELEMENT} with a value.`,
+    return refused(
+      malformed(
+        `the assertion's ${SUBJECT_ELEMENT} does not carry exactly one ${NAME_ID_ELEMENT} with a value.`,
+      ),
     );
   }
 
-  return { assertion: element, subjectIdentifier };
+  return { structural: true, assertion: element, conditions, subjectIdentifier };
 }
 
 /**
  * The regional code that names a missing attribute best, per attribute.
  *
- * Table 11's codes say *the value of this attribute does not permit access to
- * the service*, which is the nearest the region comes to naming an attribute a
- * service needed and did not get; no table names an absent one. Attributes
- * Table 11 has no code of its own for fall back to ERR_00058, which names an
- * assertion whose parameters do not conform to the organisation's policies —
- * and a required-attribute list is exactly an organisation's policy. A best
- * match either way; see {@link AssertionFailure}.
+ * No code in Appendix A.5 names an attribute that is absent, so each of these
+ * is the nearest neighbour to a question the region asks differently. The
+ * choice is argued in `docs/spec-questions.md` (D-015); the annotation is a
+ * best match either way, per {@link AssertionFailure}.
  */
 const ATTRIBUTE_ERROR_CODES: Readonly<Record<string, RegionalErrorCode>> = {
   [ASSERTION_ATTRIBUTES.REQUEST_CONTEXT]: REGIONAL_ERROR_CODES.REQUEST_CONTEXT_NOT_PERMITTED,
-  [ASSERTION_ATTRIBUTES.ROLE]: REGIONAL_ERROR_CODES.ROLE_NOT_PERMITTED,
+  [ASSERTION_ATTRIBUTES.ROLE]: REGIONAL_ERROR_CODES.ROLE_MISSING_OR_INVALID_IN_DIRECTORY,
   [ASSERTION_ATTRIBUTES.USER_CLIENT_AUTHENTICATION]:
     REGIONAL_ERROR_CODES.USER_CLIENT_AUTHENTICATION_NOT_PERMITTED,
   [ASSERTION_ATTRIBUTES.APPLICATION_ID]: REGIONAL_ERROR_CODES.APPLICATION_ID_NOT_PERMITTED,
@@ -496,15 +520,23 @@ function attributeMissing(name: string): AssertionFailure {
   };
 }
 
-/** The authentication level the assertion does not attest. */
-function authenticationLevelNotAttested(detail: string): AssertionFailure {
+/**
+ * The authentication level the assertion does not attest.
+ *
+ * The regional code is a parameter because the two ways of not attesting a
+ * level are not the same reason: one is a service demanding a level, which is
+ * what Appendix A.5, Table 12's ERR_00065 is for, and the other is an assertion
+ * contradicting itself, which no table names. See `docs/spec-questions.md`
+ * (D-015, D-016).
+ */
+function authenticationLevelNotAttested(
+  detail: string,
+  regionalErrorCode: RegionalErrorCode,
+): AssertionFailure {
   return {
     code: 'authentication-level-not-attested',
     detail,
-    // Table 12's ERR_00065 — access to the service requires two-factor
-    // authentication — is the code the region raises for exactly this, and the
-    // only level §4.1.6.2.2 attests is the two-factor one.
-    regionalErrorCode: REGIONAL_ERROR_CODES.TWO_FACTOR_AUTHENTICATION_REQUIRED,
+    regionalErrorCode,
     // The operator can authenticate again with a second factor. That is the
     // session layer's work rather than a re-request, but it is work that exists.
     unrecoverable: false,
@@ -557,10 +589,10 @@ function identityFailure(
   return {
     code: 'identity-mismatch',
     detail: `the assertion's ${SUBJECT_ELEMENT} and its ${ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY} attribute do not name one operator.`,
-    // Table 12's ERR_00059 names the responsible party's tax code not matching
-    // the one the ULSS holds. The region's version of the check compares
-    // against its own directory and this one compares the assertion against
-    // itself, but it is the same disagreement about the same value.
+    // Appendix A.5, Table 12's ERR_00059 is the region's code for this
+    // disagreement about this value, reached by comparing against the AULSS's
+    // own directory rather than by comparing the assertion against itself. See
+    // `docs/spec-questions.md` (D-015).
     regionalErrorCode: REGIONAL_ERROR_CODES.RESPONSIBLE_PARTY_FISCAL_CODE_MISMATCH,
     // Asking the same IAP the same question returns the same two answers, so a
     // retry is a loop against a third party. Someone has to fix the directory
@@ -570,12 +602,7 @@ function identityFailure(
 }
 
 /** The services the assertion is scoped to, in document order. */
-function audiences(assertion: Element): readonly string[] {
-  const conditions = onlySamlChild(assertion, CONDITIONS_ELEMENT);
-  if (conditions === undefined) {
-    return [];
-  }
-
+function audiences(conditions: Element): readonly string[] {
   return samlChildren(conditions, AUDIENCE_RESTRICTION_ELEMENT)
     .flatMap((restriction) => samlChildren(restriction, AUDIENCE_ELEMENT))
     .map((audience) => text(audience))
@@ -601,9 +628,9 @@ export function validateAssertion(
   assertion: Uint8Array,
   policy: ServicePolicy,
 ): AssertionValidation {
-  const structure = structural(assertion);
-  if ('code' in structure) {
-    return { valid: false, failures: [structure] };
+  const structure = readStructure(assertion);
+  if (!structure.structural) {
+    return { valid: false, failures: [structure.failure] };
   }
 
   const attributes = readAssertionAttributes(structure.assertion);
@@ -618,10 +645,14 @@ export function validateAssertion(
   const levels = attributes.get(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL) ?? [];
   const authenticationLevel = levels.length === 1 ? levels[0] : undefined;
   if (levels.length > 1) {
-    // Two answers to a question with one answer, whatever the policy asked for.
+    // Two answers to a question with one answer, whatever the policy asked for
+    // — an assertion contradicting itself about how strongly the operator
+    // authenticated attests nothing, and there is no service this is safe for.
+    // Argued in `docs/spec-questions.md` (D-016).
     failures.push(
       authenticationLevelNotAttested(
         'the assertion attests more than one authentication level, so it attests none.',
+        REGIONAL_ERROR_CODES.REQUEST_PARAMETERS_AGAINST_POLICY,
       ),
     );
   } else if (
@@ -631,6 +662,7 @@ export function validateAssertion(
     failures.push(
       authenticationLevelNotAttested(
         "the service requires an authentication level the assertion does not attest. The operator must authenticate again with a second factor, which is the session's work and not a re-request.",
+        REGIONAL_ERROR_CODES.TWO_FACTOR_AUTHENTICATION_REQUIRED,
       ),
     );
   }
@@ -648,7 +680,7 @@ export function validateAssertion(
   return {
     valid: true,
     operatorTaxCode: structure.subjectIdentifier,
-    audiences: audiences(structure.assertion),
+    audiences: audiences(structure.conditions),
     authenticationLevel,
   };
 }

@@ -779,3 +779,68 @@ The cost is a policy a caller cannot express: a service that genuinely accepts
 an assertion with no responsible party cannot say so here. Nothing in the
 excerpt describes such a service, and Q-001 is the question that would settle
 it.
+
+### D-015 — A local failure is annotated with the region's nearest code, not its exact one
+
+**Citations.** Appendix A.5, Tables 11 and 12 (the codes an X-Service Provider
+raises); Q-005, which establishes that those tables are open-ended; §4.2.5.3.1,
+which makes the checks an actor performs a matter of organisational policy.
+
+Every failure this library reports carries a regional error code beside it, and
+no code in Appendix A.5 names the check that produced it. The tables name
+outcomes the region reaches — *this value does not permit access*, *this tax
+code does not match the one the AULSS holds* — reached against information the
+region holds and this library does not. The library therefore annotates each
+local failure with the nearest code the region has, and says in the type that
+the annotation is a best match rather than a verdict.
+
+Three of those choices are worth naming, because a reader could reasonably have
+expected another:
+
+- A **missing required attribute** takes the Table 11 code for that attribute
+  where one exists, and ERR_00058 where none does. Table 11 grades values rather
+  than noticing absences, and a required-attribute list is precisely an
+  organisation's policy, which is what ERR_00058 names.
+- A **missing `Role`** takes ERR_00060 rather than Table 11's ERR_00042. Both
+  concern the role; only ERR_00060 concerns one that is not there, and ERR_00042
+  is a judgement about a value that this library does not make.
+- An **identity mismatch** takes ERR_00059. The region reaches that code by
+  comparing the assertion against the AULSS's directory and this library reaches
+  it by comparing the assertion against itself, but the disagreement is about
+  the same value and no other code is about that value at all.
+
+The basis is that the annotation exists to make one support conversation
+possible, not to predict a fault. A caller branching on `regionalErrorCode`
+rather than on the library's own failure code is branching on a best match, and
+the type documentation says so.
+
+The cost: an IAP or X-Service Provider that refused the same assertion might
+report a different code, and a support engineer comparing the two would see two
+codes for one problem. The library's own code is the stable one.
+
+### D-016 — An assertion attesting more than one authentication level attests none
+
+**Citations.** §4.1.6.2.2 (`authLevel`, and the one value it names); §4.1.8,
+Table 3, which lists `authLevel` as a single optional parameter in both
+directions; D-007.
+
+The specification writes `authLevel` as one attribute with one value and never
+contemplates two. SAML permits an attribute to carry several values, so an
+assertion can arrive attesting two levels at once. The validator refuses it,
+whether or not the calling service asked for a level at all.
+
+The basis is that there is no safe reading. Taking the first value is the
+collapsing this library refuses everywhere else — an assertion attesting the
+required level *and* a weaker one would pass a check the weaker value was hidden
+behind. Taking the strongest would have the library rank a scale the excerpt
+does not publish (D-007). Reporting nothing on the success branch would hide an
+attribute that is there. What is left is that an assertion contradicting itself
+about how strongly the operator authenticated attests nothing, and no service is
+safe for that — which is why the refusal is not conditional on the policy.
+
+Annotated with ERR_00058 rather than ERR_00065, deliberately: ERR_00065 says a
+service demanded a second factor, and on this path none did. See D-015.
+
+The cost: if the region later defines `authLevel` as a list — as it did define
+`codAziendaAuth` as one (Q-007) — this refuses a conforming assertion, and the
+fix is here rather than in a caller's configuration.

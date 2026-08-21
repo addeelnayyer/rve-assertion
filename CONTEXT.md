@@ -42,6 +42,13 @@ family pediatrician who is signed in. The assertion carries the responsible
 party's identity in its own right, distinctly from the identity of the software
 making the call.
 
+**Operator tax code** — the *Codice Fiscale*, the Italian personal tax
+identifier, and the value the regional infrastructure identifies the responsible
+party by. The IAP derives it from its own directory rather than from anything
+the caller sends, and an assertion carries it in two places that must agree.
+This repository says "operator tax code" in prose and code, and "Codice Fiscale"
+only where it cites the specification's own wording.
+
 **ApplicationID** — the identifier of a specific installation of a specific
 software product, registered with the AULSS and allowlisted by it. It names
 *which deployment is calling*, not which person — the responsible party covers

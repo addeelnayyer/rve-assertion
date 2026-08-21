@@ -145,7 +145,15 @@ information the region holds and this library does not.
 `requiredAuthenticationLevel` is separate, and its failure has its own code,
 because its remedy is unlike any other: the operator must authenticate again
 with a second factor, which is the session layer's work rather than a
-re-request this library's caller can make.
+re-request this library's caller can make. An assertion attesting *two*
+different levels is refused whatever the policy asked for, since it contradicts
+itself about how strongly the operator authenticated and there is no reading of
+it that is safe (`D-016`).
+
+The regional code beside a failure is the region's nearest, not its exact one —
+Appendix A.5 names outcomes the region reaches against information this library
+does not hold, so each annotation is a best match and `D-015` says which
+neighbours were chosen and why.
 
 The policy parameter is not optional. *This service asks for nothing in
 particular* is a thing to say, not a default to inherit.

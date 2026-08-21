@@ -314,7 +314,10 @@ describe('validateAssertion — required attributes', () => {
       'attribute-missing',
     ]);
     expect(refused.map((failure) => failure.regionalErrorCode)).toEqual([
-      REGIONAL_ERROR_CODES.ROLE_NOT_PERMITTED,
+      // Table 12's ERR_00060 names a role that is absent; Table 11's ERR_00042
+      // names one whose value does not permit access, which is a judgement this
+      // library does not make. See docs/spec-questions.md (D-015).
+      REGIONAL_ERROR_CODES.ROLE_MISSING_OR_INVALID_IN_DIRECTORY,
       REGIONAL_ERROR_CODES.APPLICATION_ID_NOT_PERMITTED,
     ]);
   });
@@ -406,20 +409,35 @@ describe('validateAssertion — the authentication level', () => {
     );
   });
 
+  /** An assertion attesting two levels at once, one of them the required one. */
+  const TWO_LEVELS = bytes(
+    assertionXml({
+      statement: statementXml(
+        attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+        `<saml:Attribute Name="${ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL}"><saml:AttributeValue>${TWO_FACTOR_AUTHENTICATION_LEVEL}</saml:AttributeValue><saml:AttributeValue>urn:rve:authnL1</saml:AttributeValue></saml:Attribute>`,
+      ),
+    }),
+  );
+
   it('refuses an assertion attesting the required level twice over, differently', () => {
     // Two values under one name is two answers, and a check that took the first
     // would be a check a second value could be hidden behind.
-    const assertion = bytes(
-      assertionXml({
-        statement: statementXml(
-          attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
-          `<saml:Attribute Name="${ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL}"><saml:AttributeValue>${TWO_FACTOR_AUTHENTICATION_LEVEL}</saml:AttributeValue><saml:AttributeValue>urn:rve:authnL1</saml:AttributeValue></saml:Attribute>`,
-        ),
-      }),
-    );
-
-    expect(onlyFailure(assertion, REQUIRES_TWO_FACTOR).code).toBe(
+    expect(onlyFailure(TWO_LEVELS, REQUIRES_TWO_FACTOR).code).toBe(
       'authentication-level-not-attested',
+    );
+  });
+
+  it('refuses an assertion attesting two levels even where no level was asked for', () => {
+    // Not the policy's business: an assertion contradicting itself about how
+    // strongly the operator authenticated attests nothing, and there is no
+    // service that is safe for. See docs/spec-questions.md (D-016).
+    const failure = onlyFailure(TWO_LEVELS);
+
+    expect(failure.code).toBe('authentication-level-not-attested');
+    // Not ERR_00065: no service demanded a second factor here, and saying one
+    // did would put a claim into the support conversation that nothing made.
+    expect(failure.regionalErrorCode).toBe(
+      REGIONAL_ERROR_CODES.REQUEST_PARAMETERS_AGAINST_POLICY,
     );
   });
 

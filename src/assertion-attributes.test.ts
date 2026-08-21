@@ -126,6 +126,25 @@ describe('readAssertionAttributes', () => {
     expect(attributes.size).toBe(0);
   });
 
+  it('ignores an attribute whose name is blank', () => {
+    // Blank counts as absent here as it does everywhere else this library reads
+    // an attribute, so a whitespace name cannot become something a policy is
+    // asked to match.
+    const attributes = readAssertionAttributes(
+      assertionWith(statement(attributeXml('   ', 'R.1.1'))),
+    );
+
+    expect(attributes.size).toBe(0);
+  });
+
+  it('reads a name the document indented, by the name it means', () => {
+    const attributes = readAssertionAttributes(
+      assertionWith(statement(attributeXml(` ${ASSERTION_ATTRIBUTES.ROLE} `, 'R.1.1'))),
+    );
+
+    expect(attributes.get(ASSERTION_ATTRIBUTES.ROLE)).toEqual(['R.1.1']);
+  });
+
   it('names the attributes §4.1.6.2.2 defines, so that a policy need not spell them', () => {
     expect(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY).toBe('ResponsibleParty');
     expect(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL).toBe('authLevel');

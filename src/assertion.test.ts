@@ -7,6 +7,7 @@ import {
   type AssertionTimeModel,
 } from './assertion.js';
 import { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
+import { servicePolicy, type ServicePolicy } from './service-policy.js';
 import { ValidationInputError } from './types.js';
 
 const SAML_ASSERTION_XMLNS = 'urn:oasis:names:tc:SAML:2.0:assertion';
@@ -32,6 +33,12 @@ const SUBJECT = `<saml:Subject><saml:NameID>${PLANTED_IDENTITY}</saml:NameID></s
 const NOT_BEFORE = '2026-08-21T09:00:00Z';
 const NOT_ON_OR_AFTER = '2026-08-21T13:00:00Z';
 const CONDITIONS = `<saml:Conditions NotBefore="${NOT_BEFORE}" NotOnOrAfter="${NOT_ON_OR_AFTER}"/>`;
+
+/** The service every test validates against unless it says otherwise. */
+const SERVICE = 'https://fser.regione.veneto.it/Registry';
+
+/** A policy on the baseline: exact matching, generic assertions accepted. */
+const POLICY = servicePolicy({ audience: SERVICE });
 
 /**
  * A moment comfortably inside the fixture's window, so that a structural test
@@ -78,8 +85,12 @@ function bytes(xml: string): Uint8Array {
 }
 
 /** The single failure a refusal carries, or a failing assertion. */
-function onlyFailure(input: Uint8Array, time: AssertionTimeModel = TIME) {
-  const result = validateAssertion(input, time);
+function onlyFailure(
+  input: Uint8Array,
+  time: AssertionTimeModel = TIME,
+  policy: ServicePolicy = POLICY,
+) {
+  const result = validateAssertion(input, time, policy);
   if (result.valid) {
     throw new Error('expected the assertion to be refused');
   }
@@ -89,7 +100,7 @@ function onlyFailure(input: Uint8Array, time: AssertionTimeModel = TIME) {
 
 describe('validateAssertion — the structural phase', () => {
   it('accepts a structurally complete assertion', () => {
-    expect(validateAssertion(bytes(assertionXml()), TIME).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
   });
 
   it('reports exactly one failure for bytes that are not XML at all', () => {
@@ -230,7 +241,7 @@ describe('validateAssertion — the byte contract', () => {
     const input = bytes(assertionXml());
     const before = Uint8Array.from(input);
 
-    validateAssertion(input, TIME);
+    validateAssertion(input, TIME, POLICY);
 
     expect(input).toEqual(before);
   });
@@ -269,7 +280,7 @@ describe('validateAssertion — the shape of a validity window', () => {
 
   it('accepts fractional seconds', () => {
     // The library writes whole seconds (D-004); it does not require the IAP to.
-    const result = validateAssertion(withWindow('2026-08-21T09:00:00.500Z', NOT_ON_OR_AFTER), TIME);
+    const result = validateAssertion(withWindow('2026-08-21T09:00:00.500Z', NOT_ON_OR_AFTER), TIME, POLICY);
 
     expect(result.valid).toBe(true);
   });
@@ -280,7 +291,7 @@ describe('validateAssertion — the shape of a validity window', () => {
     const result = validateAssertion(withWindow('2026-08-21T11:00:00+02:00', NOT_ON_OR_AFTER), {
       ...EXACT,
       now: new Date('2026-08-21T09:00:00Z'),
-    });
+    }, POLICY);
 
     expect(result.valid).toBe(true);
   });
@@ -288,7 +299,7 @@ describe('validateAssertion — the shape of a validity window', () => {
 
 describe('validateAssertion — the validity window', () => {
   it('accepts an assertion the clock is inside the window of', () => {
-    expect(validateAssertion(bytes(assertionXml()), TIME).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
   });
 
   it('reports the assertion as not yet valid before its window opens', () => {
@@ -308,10 +319,10 @@ describe('validateAssertion — the validity window', () => {
   it('treats NotBefore as inclusive and NotOnOrAfter as exclusive, with no margins', () => {
     const document = bytes(assertionXml());
 
-    expect(validateAssertion(document, at(EXACT, NOT_BEFORE)).valid).toBe(true);
-    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_BEFORE) - 1)).valid).toBe(false);
-    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_ON_OR_AFTER) - 1)).valid).toBe(true);
-    expect(validateAssertion(document, at(EXACT, NOT_ON_OR_AFTER)).valid).toBe(false);
+    expect(validateAssertion(document, at(EXACT, NOT_BEFORE), POLICY).valid).toBe(true);
+    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_BEFORE) - 1), POLICY).valid).toBe(false);
+    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_ON_OR_AFTER) - 1), POLICY).valid).toBe(true);
+    expect(validateAssertion(document, at(EXACT, NOT_ON_OR_AFTER), POLICY).valid).toBe(false);
   });
 
   it('lets clock skew loosen the not-before bound', () => {
@@ -323,8 +334,8 @@ describe('validateAssertion — the validity window', () => {
       Date.parse(NOT_BEFORE) - RECOMMENDED_CLOCK_SKEW_MS,
     );
 
-    expect(validateAssertion(document, skewed).valid).toBe(true);
-    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }).valid).toBe(false);
+    expect(validateAssertion(document, skewed, POLICY).valid).toBe(true);
+    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }, POLICY).valid).toBe(false);
   });
 
   it('moves the not-on-or-after bound earlier by the skew alone, with no flight time', () => {
@@ -337,8 +348,8 @@ describe('validateAssertion — the validity window', () => {
       Date.parse(NOT_ON_OR_AFTER) - RECOMMENDED_CLOCK_SKEW_MS,
     );
 
-    expect(validateAssertion(document, skewed).valid).toBe(false);
-    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }).valid).toBe(true);
+    expect(validateAssertion(document, skewed, POLICY).valid).toBe(false);
+    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }, POLICY).valid).toBe(true);
   });
 
   it('lets clock skew and flight time together tighten the not-on-or-after bound', () => {
@@ -348,8 +359,8 @@ describe('validateAssertion — the validity window', () => {
     const margin = RECOMMENDED_CLOCK_SKEW_MS + RECOMMENDED_FLIGHT_TIME_MS;
     const late = at(TIME, Date.parse(NOT_ON_OR_AFTER) - margin);
 
-    expect(validateAssertion(document, late).valid).toBe(false);
-    expect(validateAssertion(document, { ...late, clockSkewMs: 0, flightTimeMs: 0 }).valid).toBe(
+    expect(validateAssertion(document, late, POLICY).valid).toBe(false);
+    expect(validateAssertion(document, { ...late, clockSkewMs: 0, flightTimeMs: 0 }, POLICY).valid).toBe(
       true,
     );
   });
@@ -357,7 +368,7 @@ describe('validateAssertion — the validity window', () => {
   it('returns a usable-until deadline that is the tightened bound itself', () => {
     // What a cache evicts on: the last instant at which spending the assertion
     // is still expected to arrive in time.
-    const result = validateAssertion(bytes(assertionXml()), TIME);
+    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY);
 
     if (!result.valid) {
       throw new Error('expected the assertion to be accepted');
@@ -377,7 +388,7 @@ describe('validateAssertion — the validity window', () => {
       ...EXACT,
       now: new Date('2026-08-21T10:00:29Z'),
       flightTimeMs: RECOMMENDED_FLIGHT_TIME_MS,
-    });
+    }, POLICY);
 
     if (result.valid) {
       throw new Error('expected the assertion to be refused');
@@ -399,7 +410,7 @@ describe('validateAssertion — the validity window', () => {
     const conditions =
       '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2027-08-21T09:00:00Z"/>';
 
-    expect(validateAssertion(bytes(assertionXml({ conditions })), TIME).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml({ conditions })), TIME, POLICY).valid).toBe(true);
   });
 });
 
@@ -416,18 +427,185 @@ describe('validateAssertion — the time model', () => {
     // The caller's own arguments, not the third party's document: a bad one is
     // a programming error, and the alternative is silent — every comparison
     // against NaN is false, so the assertion would be accepted unconditionally.
-    expect(() => validateAssertion(document, { ...TIME, ...overrides })).toThrow(
+    expect(() => validateAssertion(document, { ...TIME, ...overrides }, POLICY)).toThrow(
       ValidationInputError,
     );
   });
 
   it('accepts a caller that declines both margins', () => {
-    expect(validateAssertion(document, EXACT).valid).toBe(true);
+    expect(validateAssertion(document, EXACT, POLICY).valid).toBe(true);
   });
 
   it('names recommended margins without applying them', () => {
     // Exported so that taking them is something a caller writes down.
     expect(RECOMMENDED_CLOCK_SKEW_MS).toBeGreaterThan(0);
     expect(RECOMMENDED_FLIGHT_TIME_MS).toBeGreaterThan(0);
+  });
+});
+
+/** A `Conditions` element carrying `inner`, over the fixture's own window. */
+function conditionsWith(inner: string): string {
+  return [
+    `<saml:Conditions NotBefore="${NOT_BEFORE}" NotOnOrAfter="${NOT_ON_OR_AFTER}">`,
+    inner,
+    '</saml:Conditions>',
+  ].join('');
+}
+
+/** One `AudienceRestriction` naming `audiences`, of which there may be none. */
+function restriction(...audiences: readonly string[]): string {
+  return [
+    '<saml:AudienceRestriction>',
+    ...audiences.map((audience) => `<saml:Audience>${audience}</saml:Audience>`),
+    '</saml:AudienceRestriction>',
+  ].join('');
+}
+
+/** Whether the assertion carrying `conditions` validates against `policy`. */
+function accepts(conditions: string, policy: ServicePolicy = POLICY): boolean {
+  return validateAssertion(bytes(assertionXml({ conditions })), TIME, policy).valid;
+}
+
+const OTHER_SERVICE = 'https://sar.regione.veneto.it/demVisualizzaErogatoCUP';
+
+describe('validateAssertion — the audience', () => {
+  it('accepts an assertion scoped to the service about to be called', () => {
+    expect(accepts(conditionsWith(restriction(SERVICE)))).toBe(true);
+  });
+
+  it('accepts an assertion naming several services, one of which is this one', () => {
+    // §4.1.6.2.2 allows more than one Audience, and SAML 2.0 core makes them a
+    // disjunction: the assertion is scoped to any of the services it names.
+    expect(accepts(conditionsWith(restriction(OTHER_SERVICE, SERVICE)))).toBe(true);
+  });
+
+  it('accepts an audience an XML pretty-printer wrapped in whitespace', () => {
+    expect(accepts(conditionsWith(restriction(`\n        ${SERVICE}\n      `)))).toBe(true);
+  });
+
+  it('refuses an assertion scoped to some other service', () => {
+    const failure = onlyFailure(
+      bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+    );
+
+    expect(failure.code).toBe('audience-mismatch');
+    expect(failure.regionalErrorCode).toBe(REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED);
+  });
+
+  it('refuses an AudienceRestriction that names no service at all', () => {
+    // §4.1.6.2.2 puts no lower bound on the Audience sub-elements. A restriction
+    // naming nobody restricts to nobody, so it is a mismatch rather than the
+    // generic assertion of §3.1.1 — the document did declare a restriction.
+    expect(
+      onlyFailure(bytes(assertionXml({ conditions: conditionsWith(restriction()) }))).code,
+    ).toBe('audience-mismatch');
+  });
+
+  it('requires every AudienceRestriction to name the service, not merely one of them', () => {
+    // SAML 2.0 core conjoins restrictions: each is a separate condition and all
+    // must hold. Fails closed on a document the region's own examples never
+    // produce — see docs/spec-questions.md (D-018).
+    const conditions = conditionsWith(restriction(SERVICE) + restriction(OTHER_SERVICE));
+
+    expect(onlyFailure(bytes(assertionXml({ conditions }))).code).toBe('audience-mismatch');
+  });
+
+  it('accepts an assertion whose every restriction names the service', () => {
+    expect(
+      accepts(conditionsWith(restriction(SERVICE) + restriction(SERVICE, OTHER_SERVICE))),
+    ).toBe(true);
+  });
+
+  it('compares exactly by default, refusing a host differing only in case', () => {
+    const conditions = conditionsWith(restriction('https://FSER.regione.veneto.it/Registry'));
+
+    expect(onlyFailure(bytes(assertionXml({ conditions }))).code).toBe('audience-mismatch');
+  });
+
+  it('accepts that same assertion once the caller asks for normalised matching', () => {
+    const normalising = servicePolicy({ audience: SERVICE, audienceMatching: 'normalised' });
+    const conditions = conditionsWith(restriction('https://FSER.regione.veneto.it/Registry'));
+
+    expect(accepts(conditions, normalising)).toBe(true);
+  });
+
+  it('never echoes the audience it found into the detail', () => {
+    const conditions = conditionsWith(restriction(`${OTHER_SERVICE}?patient=${PLANTED_IDENTITY}`));
+
+    expect(onlyFailure(bytes(assertionXml({ conditions }))).detail).not.toContain(
+      PLANTED_IDENTITY,
+    );
+  });
+});
+
+describe('validateAssertion — a generic assertion', () => {
+  const CONFIDENTIAL = servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
+
+  it('accepts one, on the baseline policy', () => {
+    // The baseline is an inference from §4.1.8, Table 3, which marks the
+    // audience optional — not a statement §4.2.6 makes. D-015.
+    expect(accepts(conditionsWith(''))).toBe(true);
+  });
+
+  it('accepts one whose Conditions has no children at all', () => {
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
+  });
+
+  it('refuses one when the caller says the service refuses them', () => {
+    // §3.1.1's confidential service: the only assertion it honours is one
+    // whose request named it.
+    const failure = onlyFailure(
+      bytes(assertionXml({ conditions: conditionsWith('') })),
+      TIME,
+      CONFIDENTIAL,
+    );
+
+    expect(failure.code).toBe('audience-absent');
+    expect(failure.regionalErrorCode).toBe(REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED);
+  });
+
+  it('distinguishes it from an assertion scoped to the wrong service', () => {
+    // Two different corrections. An absent audience says this service needs a
+    // scoped request it never gets; a mismatch says a scoped assertion was
+    // reused across services. Both re-request, and a caller told only
+    // "audience" cannot tell which of its two bugs it has.
+    const scopedElsewhere = onlyFailure(
+      bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+      TIME,
+      CONFIDENTIAL,
+    );
+
+    expect(scopedElsewhere.code).toBe('audience-mismatch');
+  });
+
+  it('does not reach the audience at all when the document is malformed', () => {
+    // The structural short-circuit: a document with no Conditions has no
+    // audience to be missing, and reporting one would be reporting the same
+    // failure twice.
+    const failure = onlyFailure(bytes(assertionXml({ conditions: '' })), TIME, CONFIDENTIAL);
+
+    expect(failure.code).toBe('malformed');
+  });
+});
+
+describe('validateAssertion — the semantic phase reports every reason', () => {
+  it('reports both an expired window and a wrong audience, not the first of them', () => {
+    // The two checks are independent, and a caller that fixed the audience,
+    // re-requested and then discovered the expiry has spent a round trip on
+    // learning what this list could have told it.
+    const conditions = conditionsWith(restriction(OTHER_SERVICE));
+    const result = validateAssertion(
+      bytes(assertionXml({ conditions })),
+      at(EXACT, NOT_ON_OR_AFTER),
+      POLICY,
+    );
+
+    if (result.valid) {
+      throw new Error('expected the assertion to be refused');
+    }
+    expect(result.failures.map((failure) => failure.code).sort()).toEqual([
+      'audience-mismatch',
+      'expired',
+    ]);
   });
 });

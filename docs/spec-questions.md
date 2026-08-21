@@ -813,3 +813,153 @@ The current instant is required rather than defaulted so that the validator can
 be driven at a chosen moment by a test, and by a caller with a better time
 source than this process's clock. The cost is one more argument at every call
 site, which is the visible choice being bought.
+### D-015 — The baseline service policy accepts a generic assertion, on an inference from RVE-1.a's table
+
+**Citations.** §3.1.1 (the audience-restriction use case: a service holding
+highly confidential data may turn away any assertion whose request did not name
+it); §4.1.6.2.2 (the `AudienceRestriction` element, which it makes
+optional, and the `Audience` sub-elements it puts no lower bound on); §4.1.8,
+Table 3 (the RVE-1.a information-content table, which marks the audience
+Optional in the request and Optional in the assertion); §4.2.6, which defines
+the RVE-1.b response by reference to §4.1.6.2.2 and states nothing of its own.
+
+Whether a regional service accepts an assertion that names no audience is not a
+property of RVE-1.b. §3.1.1 makes it a property of the service, decided by the
+organisation's own policies, and gives no list of which services decide which
+way — only the worked example of a document consultation that needs a named
+assertion where prescription sending does not. So the policy is caller-supplied: the audience is the URL of the one
+service about to be called, and only the caller knows it.
+
+The library still has to answer for a caller that names a service and says
+nothing else. `BASELINE_SERVICE_POLICY` answers *accepts a generic assertion*,
+and the code labels that as an inference from the RVE-1.a table rather than as
+something the specification states for RVE-1.b. The read-across is: §4.2.6 has
+no table of its own, the nearest one is RVE-1.a's, that table marks the audience
+optional in both directions, and §4.1.6.2.2 makes the element a MAY. An
+assertion without one is therefore conforming, and a library that refused it by
+default would be refusing a document the region is entitled to issue.
+
+The basis for labelling rather than simply choosing: Q-001 is the reason there
+is no RVE-1.b table to read, and a default presented as a citation would be a
+guess that a later reader could not tell from a fact. A caller whose service is
+one of §3.1.1's confidential ones sets `refusesGenericAssertions` and the
+inference stops mattering for them.
+
+The cost is a fail-open in exactly one shape: a deployment that forgets to mark
+a confidential service as confidential will accept a generic assertion locally
+and have it refused by the X-Service Provider with `ERR_00044`, one round trip
+later. That is the direction the specification's own optionality points, and the
+alternative — refusing by default — would break every caller of every service
+that has no audience policy at all.
+
+### D-016 — Audience matching is exact, with normalisation behind a flag the caller sets
+
+**Citations.** §4.1.6.2.2 (an `Audience` names its service by a URL given in
+full); Appendix A.5, Table 11
+(`ERR_00044`); §4.6 (the assertion is spent, unmodified, on the X-Service
+Provider, which does its own check).
+
+The specification says an `Audience` carries a complete URL and says nothing
+about how to compare two of them. RFC 3986 makes a scheme and a host
+case-insensitive, a default port removable and an empty path equivalent to `/`,
+while leaving the path case-sensitive — so two spellings of one service are
+possible and the document does not say whether they are one audience.
+
+The library compares exactly by default and offers `audienceMatching:
+'normalised'` per service.
+
+The basis is which way each mode fails. This library's answer does not decide
+anything: the X-Service Provider will run its own comparison on the assertion,
+in a way §4.6 does not specify, and its answer is the one that matters.
+Normalising by default would therefore let the library accept an assertion that
+the real service then refuses — a local check that says yes where the remote one
+says no is worse than no local check, because it moves the failure past the
+point where the caller could still have re-requested cheaply. Exact matching
+fails the other way: it may re-request an assertion that would in fact have been
+accepted, which costs one round trip and no correctness.
+
+Normalisation, when a caller does turn it on, is the WHATWG URL parser's own —
+lowercased scheme and host, the scheme's default port dropped, an empty path
+written as `/` — and nothing beyond it. The path case and a trailing slash on a
+non-empty path stay significant, because RFC 3986 makes them significant and an
+IAP that distinguishes two paths is entitled to. A value that does not parse as
+a URL falls back to a comparison of the trimmed strings rather than throwing;
+the value on the assertion's side is whatever the IAP wrote, and a validator
+that crashed on it would turn a mismatch into an outage.
+
+Whitespace around the value is stripped in both modes and is not part of the
+choice: a URI cannot contain whitespace, so an indent an XML formatter added was
+never part of the value. Stripping is not `xs:anyURI` collapse, which would also
+fold internal whitespace runs — internal whitespace is left alone, and a value
+carrying it correctly fails to match. On the policy's side the strip happens
+once, where the policy is built, so `policy.audience` is a value the caller can
+put into the re-request the refusal calls for.
+
+The cost of the default is the round trip described above, and the cost of the
+flag is that a caller can turn it on for a service whose real comparison is
+stricter, reintroducing exactly the fail-open the default avoids. That is why it
+is per-service and explicit rather than a global setting.
+
+### D-017 — The service policy carries no permitted contexts and no permitted roles
+
+**Citations.** §4.2.5.3.1 (the IAP's mandatory checks: the declared context
+against the contexts enabled for the ApplicationID, the user client
+authentication against the permitted types, the digital identity against a
+configurable list); Appendix A.5, Table 11, which gives an X-Service Provider a
+code for each of request context, role, user client authentication, audience and
+ApplicationID; §2 (the boundary tables the organisation holds).
+
+The X-Service Provider weighs five attributes and can refuse on any of them.
+The service policy this library takes models one: the audience. The omission is
+deliberate and is a trade-off rather than a gap.
+
+Every one of the other four is decided against a table the organisation holds
+and maintains — which contexts an ApplicationID may declare, which roles reach
+which service, which authentication methods are permitted. This library has no
+sight of those tables and no way to be told when one changes. A client-side copy
+would be a second answer to a question the region already answers, and a staler
+one: the day an AULSS grants a context, every deployment still carrying the old
+list starts refusing assertions that have just become good. A local check that
+fails closed against a stale list is worse than no local check, because the
+remedy is a redeploy rather than a re-request.
+
+The audience is the exception, and the reason is specific: the caller is the
+party that asked for the audience. Checking it is the caller confirming its own
+request was honoured before spending it, not the caller re-deciding an
+entitlement the organisation granted. Nothing about it needs a table.
+
+The cost: a context, role, authentication-method or ApplicationID problem is
+discovered from the X-Service Provider's fault rather than locally, one round
+trip later, and the library reports no failure for any of them. The regional
+codes for all five are named in `src/regional-error-codes.ts` so that an inbound
+fault can be branched on, which is where that diagnosis belongs.
+
+### D-018 — Two AudienceRestriction elements are conjoined, not flattened
+
+**Citations.** §4.1.6.2.2 (the optional `AudienceRestriction` element under
+`Conditions`, whose sub-elements each name one X-Service Provider entitled to
+accept the assertion, and of which there may be several or none); SAML 2.0 core,
+which the specification profiles.
+
+§4.1.6.2.2 describes one `AudienceRestriction` and neither permits nor forbids a
+second, and no worked example carries one. SAML 2.0 core does settle it: each
+`AudienceRestriction` is a condition in its own right, all conditions must hold,
+and the audiences within one are a disjunction — so an assertion carrying two
+restrictions is scoped to their intersection.
+
+The validator implements the SAML reading: every restriction must name the
+service, and one matching audience within a restriction satisfies it. A
+restriction naming no service at all — which §4.1.6.2.2 permits, putting no
+lower bound on the sub-elements — is satisfied by nobody, and is reported as a mismatch rather than as
+the generic assertion of §3.1.1, because the document did declare a restriction.
+
+The basis is that the X-Service Provider validates with a SAML stack, so the
+SAML reading is the one that will actually be applied to the assertion, and
+where the two readings differ this one is the stricter. A regional document that
+never produces two restrictions costs nothing either way; one that does, and
+means the intersection, is handled correctly.
+
+The cost: if the region ever emits two restrictions intending their union, the
+library refuses an assertion its X-Service Provider would have accepted. That
+would be visible immediately, as a refusal naming the audience, rather than as a
+silent acceptance.

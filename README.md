@@ -10,13 +10,12 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator has its structural phase and its validity-window check; the rest of
-> its semantic phase — audience, required attributes, identity cross-check,
-> signature integrity — is not written yet. **Do not spend an assertion on the
-> strength of `validateAssertion` returning valid in this build**: it does not
-> yet establish that the assertion is scoped to the service you are about to
-> call, or that it was signed by anyone. See
-> [Validating an assertion](#validating-an-assertion).
+> validator has its structural phase, its validity-window check and its audience
+> check; the rest of its semantic phase — required attributes, identity
+> cross-check, signature integrity — is not written yet. **Do not spend an
+> assertion on the strength of `validateAssertion` returning valid in this
+> build**: it does not yet establish that the assertion was signed by anyone.
+> See [Validating an assertion](#validating-an-assertion).
 
 ## The regional code vocabulary
 
@@ -88,21 +87,32 @@ RVE-1.b is `Q-006`.
 
 ## Validating an assertion
 
-`validateAssertion` takes the raw bytes of a **bare `saml:Assertion` element**
-and returns a discriminated result.
+`validateAssertion` takes the raw bytes of a **bare `saml:Assertion` element**,
+the clock to judge it at, and the policy of the service about to be called, and
+returns a discriminated result.
 
 ```ts
 import {
   RECOMMENDED_CLOCK_SKEW_MS,
   RECOMMENDED_FLIGHT_TIME_MS,
+  servicePolicy,
   validateAssertion,
 } from 'rve-assertion';
 
-const result = validateAssertion(assertionBytes, {
-  now: new Date(),
-  clockSkewMs: RECOMMENDED_CLOCK_SKEW_MS,
-  flightTimeMs: RECOMMENDED_FLIGHT_TIME_MS,
+const registry = servicePolicy({
+  audience: 'https://fser.regione.veneto.it/Registry',
+  refusesGenericAssertions: true,
 });
+
+const result = validateAssertion(
+  assertionBytes,
+  {
+    now: new Date(),
+    clockSkewMs: RECOMMENDED_CLOCK_SKEW_MS,
+    flightTimeMs: RECOMMENDED_FLIGHT_TIME_MS,
+  },
+  registry,
+);
 if (result.valid) {
   cache.set(assertionBytes, { evictAt: result.usableUntil });
 } else {
@@ -146,8 +156,8 @@ both directions — it does not accumulate structural failures, and it does not
 let the semantic phase run. Unparseable bytes have no audience to compare and no
 signature to bind, so a list of later failures would report things missing only
 because the document is. The semantic phase is the one that runs to completion
-and reports every reason; it arrives with the tickets that give it something to
-check.
+and reports every reason. It checks the validity window and the audience today;
+the rest arrives with the tickets that give it something to check.
 
 ### The validity window, and the time model around it
 
@@ -210,6 +220,54 @@ refused outright (`D-011`). A fourth concerns the window: a `NotBefore` or
 one, since two hosts in different zones would otherwise reach different verdicts
 about the same assertion (`D-012`). An explicit `+02:00` offset is accepted —
 it names the same instant a `Z` value would.
+
+### The service policy
+
+The policy is **caller-supplied**, and required — there is no validating an
+assertion without saying what it is about to be spent on. §3.1.1 is why: a
+service holding highly confidential data may turn away any assertion whose
+request did not name it, and which services do that is decided by the
+organisation, not by the specification.
+
+`servicePolicy` is a smart constructor and throws `ValidationInputError` on a
+blank audience, on one that is not an absolute URL, and on a matching mode it
+does not implement. It stores the audience with the whitespace around it
+stripped, so `policy.audience` is a value a scoped re-request can carry. What
+the caller does not say, `BASELINE_SERVICE_POLICY` fills in:
+
+- `refusesGenericAssertions: false` — **an inference, labelled as one.** §4.2.6
+  has no information-content table of its own; the nearest is RVE-1.a's, which
+  marks the audience optional in both directions, and §4.1.6.2.2 makes the
+  element a `MAY`. Read across, a generic assertion is conforming. Nothing here
+  claims the specification states this for RVE-1.b — `D-015`, and `Q-001` for
+  why there is no RVE-1.b table to read.
+- `audienceMatching: 'exact'` — string comparison, after stripping the
+  whitespace an XML formatter put around the value, which a URI could not have
+  contained. `'normalised'` is available per service and
+  applies the WHATWG URL form: lowercased scheme and host, default port dropped,
+  empty path written as `/`. Path case and a trailing slash stay significant.
+  Exact is the default because the X-Service Provider runs its own comparison
+  and a local *yes* against a remote *no* is worse than no local check —
+  `D-016`.
+
+An assertion naming several services is valid if one of them is this one, and an
+assertion carrying two `AudienceRestriction` elements must satisfy both, which
+is SAML 2.0 core's reading of an element §4.1.6.2.2 describes only in the
+singular (`D-018`).
+
+The two audience refusals are distinct codes. `audience-mismatch` says the
+assertion is scoped elsewhere; `audience-absent` says it is generic and this
+service was declared to refuse that. Both annotate `ERR_00044` and both are
+resolved by one re-request, but they are different bugs in the caller.
+
+**The policy carries no permitted contexts and no permitted roles**, and the
+omission is deliberate. An X-Service Provider weighs five attributes and can
+refuse on any of them; four are decided against boundary tables the organisation
+holds, which this library cannot see and cannot be told about when they change.
+A stale client-side copy fails closed and is fixed by a redeploy. The audience
+is the exception because the caller is the party that asked for it — checking it
+is confirming its own request was honoured, not re-deciding an entitlement.
+`D-017` has the argument and the cost.
 
 ## Install and test
 

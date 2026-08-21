@@ -43,6 +43,12 @@ export type {
   Rve1bRequestInput,
   Username,
 } from './request.js';
+export { BASELINE_SERVICE_POLICY, servicePolicy } from './service-policy.js';
+export type {
+  AudienceMatching,
+  ServicePolicy,
+  ServicePolicyInput,
+} from './service-policy.js';
 export { RequestInputError, ValidationInputError } from './types.js';
 export {
   applicationIdShape,

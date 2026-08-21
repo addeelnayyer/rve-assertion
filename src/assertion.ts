@@ -2,15 +2,14 @@
  * The assertion validator — §4.1.6.2.2, which §4.2.6 makes RVE-1.b's response
  * structure by reference.
  *
- * **Status: incomplete.** The structural phase and the validity window are
- * here; audience, required attributes, identity cross-check and signature
+ * **Status: incomplete.** The structural phase, the validity window and the
+ * audience are here; required attributes, identity cross-check and signature
  * integrity are not. So a `valid: true` result from this build means *this
- * document is shaped like an assertion and the clock is inside its window*,
- * and nothing more — it does not mean the assertion is scoped to the service
- * about to be called, or that it was signed by anyone at all. Until the
- * remaining work lands, a caller must not read the success branch as permission
- * to spend the assertion. The README says the same thing where a reader will
- * meet it first.
+ * document is shaped like an assertion, the clock is inside its window, and it
+ * is scoped to the service it was checked against*, and nothing more — it does
+ * not mean it was signed by anyone at all. Until the remaining work lands, a
+ * caller must not read the success branch as permission to spend the assertion.
+ * The README says the same thing where a reader will meet it first.
  *
  * ## What it is handed
  *
@@ -45,7 +44,18 @@
  * The semantic phase runs to completion and reports every failure it finds,
  * because by then the failures are independent: an assertion can be out of
  * date *and* wrongly scoped, and a caller deciding between refreshing and
- * re-scoping needs both. Today it holds one check, the validity window.
+ * re-scoping needs both. Today it holds two checks, the validity window and the
+ * audience.
+ *
+ * ## The service is an argument too
+ *
+ * The audience is checked against a policy the caller supplies, because §3.1.1
+ * makes "does this service accept this assertion" a property of the service and
+ * of the organisation's own policies rather than of the RVE-1.b transaction.
+ * `src/service-policy.ts` holds the type and the reasoning; here it is one more
+ * required argument, for the same reason the clock is one: there is no
+ * validating an assertion without saying when, and against what, it is about to
+ * be spent.
  *
  * ## Time is an argument, not an ambient fact
  *
@@ -75,6 +85,7 @@ import type { Document, Element } from '@xmldom/xmldom';
 
 import { SAML_ASSERTION_NAMESPACE } from './namespaces.js';
 import { REGIONAL_ERROR_CODES, type RegionalErrorCode } from './regional-error-codes.js';
+import { audienceMatches, type ServicePolicy } from './service-policy.js';
 import { ValidationInputError } from './types.js';
 
 /** The local name of the element an assertion is — §4.1.6.2.2. */
@@ -82,6 +93,12 @@ const ASSERTION_ELEMENT = 'Assertion';
 
 /** The local name of the element carrying the validity window — §4.1.6.2.2. */
 const CONDITIONS_ELEMENT = 'Conditions';
+
+/** The local name of the element scoping an assertion to services — §4.1.6.2.2. */
+const AUDIENCE_RESTRICTION_ELEMENT = 'AudienceRestriction';
+
+/** The local name of the element naming one such service — §4.1.6.2.2. */
+const AUDIENCE_ELEMENT = 'Audience';
 
 /** SAML 2.0 protocol version, the only value §4.1.6.2.2 permits. */
 const SAML_VERSION = '2.0';
@@ -100,8 +117,22 @@ const SAML_VERSION = '2.0';
  * `expired` is answered by requesting a fresh assertion, and `not-yet-valid`
  * is answered by fixing a clock, since an IAP that issues assertions starting
  * in the future is not something a retry loop will outlast.
+ *
+ * The two audience verdicts are kept apart for the same kind of reason.
+ * `audience-mismatch` says a scoped assertion was spent on a service it was not
+ * scoped to — a caching bug, or a re-request that kept the previous call's
+ * audience. `audience-absent` says the assertion is generic and this service
+ * refuses generic assertions (§3.1.1) — the request never asked for a scope,
+ * and the tenant's configuration for this service is what changes. Both are
+ * resolved by one re-request, and a caller told only "audience" cannot tell
+ * which of its two bugs it has.
  */
-export type AssertionFailureCode = 'malformed' | 'not-yet-valid' | 'expired';
+export type AssertionFailureCode =
+  | 'malformed'
+  | 'not-yet-valid'
+  | 'expired'
+  | 'audience-mismatch'
+  | 'audience-absent';
 
 /**
  * One reason an assertion was refused.
@@ -130,9 +161,12 @@ export interface AssertionFailure {
 /**
  * An assertion this library found no fault with.
  *
- * The operator's tax code, the audiences and the authentication level are the
- * rest of the semantic phase's to report, and it is not written yet — see the
- * module comment.
+ * The operator's tax code and the authentication level are the rest of the
+ * semantic phase's to report, and it is not written yet — see the module
+ * comment. The audiences are read, to check them, and reported by nothing: a
+ * caller that wants to know which services an assertion is scoped to is a
+ * caching layer, and that is the ticket that will add the field beside the
+ * deadline it is actually keyed on.
  */
 export interface ValidAssertion {
   readonly valid: true;
@@ -179,8 +213,8 @@ export interface InvalidAssertion {
 export type AssertionValidation = ValidAssertion | InvalidAssertion;
 
 /** A structural refusal: one failure, always, and always the same code. */
-function malformed(detail: string): AssertionFailure {
-  return {
+function refused(detail: string): StructuralRefusal {
+  const failure: AssertionFailure = {
     code: 'malformed',
     detail,
     // A document not recognisable as an assertion token is what ERR_00023
@@ -193,6 +227,8 @@ function malformed(detail: string): AssertionFailure {
     // The annotation is a best match either way — see {@link AssertionFailure}.
     regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_TOKEN_UNRECOGNISABLE,
   };
+
+  return { read: false, failure };
 }
 
 /**
@@ -388,22 +424,26 @@ const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as
  * present, so that a call site says which case it is handling in the same way
  * {@link AssertionValidation} makes its own caller say it.
  *
- * The success side carries one field so far, because the validity window is the
- * one semantic check written. The audience list, the attribute statement and
- * the signature join it as the checks that read them arrive; each is added by
- * the ticket that reads it, so the type never carries a field no test reaches.
+ * The success side carries the window, already parsed, and the `Conditions`
+ * element the audience restrictions hang off. The element rather than the
+ * audiences themselves: the window comes off the same element, and reading half
+ * of `Conditions` here and half in the phase that uses it would put the
+ * document's shape in two places. The attribute statement and the signature
+ * join it as the checks that read them arrive; each is added by the ticket that
+ * reads it, so the type never carries a field no test reaches.
  */
 interface StructuralRefusal {
   readonly read: false;
   readonly failure: AssertionFailure;
 }
 
-type StructuralRead = { readonly read: true; readonly window: ValidityWindow } | StructuralRefusal;
-
-/** A structural refusal, in the shape the phase returns it. */
-function refused(detail: string): StructuralRefusal {
-  return { read: false, failure: malformed(detail) };
+interface StructureRead {
+  readonly read: true;
+  readonly window: ValidityWindow;
+  readonly conditions: Element;
 }
+
+type StructuralRead = StructureRead | StructuralRefusal;
 
 /**
  * The instant `name` names on `conditions`, or the refusal for its not naming
@@ -523,6 +563,7 @@ function readStructure(assertion: Uint8Array): StructuralRead {
   return {
     read: true,
     window: { notBefore: notBefore.instant, notOnOrAfter: notOnOrAfter.instant },
+    conditions,
   };
 }
 
@@ -604,6 +645,64 @@ function checkWindow(
 }
 
 /**
+ * One audience refusal. Both map to `ERR_00044`, which is the only code
+ * Appendix A.5, Table 11 offers for an audience, and they are separate library
+ * codes anyway — see {@link AssertionFailureCode}.
+ *
+ * The detail names no URL, not even the caller's own. Details are constant text
+ * throughout this module, and the caller already holds the policy it passed.
+ */
+function audienceFailure(code: 'audience-mismatch' | 'audience-absent'): AssertionFailure {
+  return {
+    code,
+    detail:
+      code === 'audience-absent'
+        ? 'the assertion names no audience, and this service was declared to refuse a generic assertion.'
+        : 'the assertion is scoped to services that do not include the one it was validated against.',
+    regionalErrorCode: REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED,
+  };
+}
+
+/**
+ * Whether `restriction` names the service `policy` describes.
+ *
+ * SAML 2.0 core makes the audiences within one restriction a disjunction, and
+ * §4.1.6.2.2 agrees in substance: each sub-element names one X-Service Provider
+ * that is entitled to accept the assertion, and there may be several. A
+ * restriction naming none — which §4.1.6.2.2 permits, since it puts no lower
+ * bound on how many sub-elements there are — restricts to nobody, so it is
+ * satisfied by nobody.
+ */
+function restrictionNames(restriction: Element, policy: ServicePolicy): boolean {
+  return samlChildren(restriction, AUDIENCE_ELEMENT).some((audience) =>
+    audienceMatches(policy, audience.textContent ?? ''),
+  );
+}
+
+/**
+ * Every way `conditions` scopes the assertion somewhere other than the service
+ * `policy` describes — at most one, since there is one thing to say about it.
+ */
+function checkAudience(conditions: Element, policy: ServicePolicy): readonly AssertionFailure[] {
+  const restrictions = samlChildren(conditions, AUDIENCE_RESTRICTION_ELEMENT);
+
+  // No restriction at all is §3.1.1's generic assertion, and it is conforming:
+  // §4.1.6.2.2 makes the element optional. Whether this service accepts one is
+  // the caller's to declare, and the baseline says it does — see
+  // BASELINE_SERVICE_POLICY.
+  if (restrictions.length === 0) {
+    return policy.refusesGenericAssertions ? [audienceFailure('audience-absent')] : [];
+  }
+
+  // Conjoined, not flattened. SAML 2.0 core makes each AudienceRestriction a
+  // condition in its own right, so an assertion carrying two is scoped to the
+  // intersection. Argued in `docs/spec-questions.md` (D-018).
+  return restrictions.every((restriction) => restrictionNames(restriction, policy))
+    ? []
+    : [audienceFailure('audience-mismatch')];
+}
+
+/**
  * Validates the identity assertion in `assertion`, as the exact bytes the
  * Identity and Assertion Provider returned.
  *
@@ -618,17 +717,23 @@ function checkWindow(
  * Throws {@link ValidationInputError} — never for the assertion, only for
  * `time`. The document is data to be refused; the time model is the caller's
  * own arguments, and one that cannot be compared against is a defect in the
- * caller rather than in the IAP.
+ * caller rather than in the IAP. `policy` cannot fail here at all: it was
+ * checked where it was built, by `servicePolicy`.
  *
- * **Incomplete — see the module comment.** The structure and the validity
- * window are checked; the audience, the required attributes, the identity
+ * `policy` describes the one regional service this assertion is about to be
+ * spent on, and is required for the same reason `time` is: §3.1.1's
+ * confidential services make "is this assertion acceptable" a question that
+ * cannot be asked without naming the service asking it.
+ *
+ * **Incomplete — see the module comment.** The structure, the validity window
+ * and the audience are checked; the required attributes, the identity
  * cross-check and the signature are not, so a valid result does not establish
- * that this assertion is scoped to the service about to be called or that it
- * was signed by anyone.
+ * that this assertion was signed by anyone.
  */
 export function validateAssertion(
   assertion: Uint8Array,
   time: AssertionTimeModel,
+  policy: ServicePolicy,
 ): AssertionValidation {
   checkTimeModel(time);
 
@@ -639,8 +744,8 @@ export function validateAssertion(
 
   // The semantic phase: every check runs, and every failure is reported. The
   // remaining checks join the list here as they are written.
-  const { failures, usableUntil } = checkWindow(structure.window, time);
-  const [first, ...rest] = failures;
+  const { failures: windowFailures, usableUntil } = checkWindow(structure.window, time);
+  const [first, ...rest] = [...windowFailures, ...checkAudience(structure.conditions, policy)];
   if (first !== undefined) {
     return { valid: false, failures: [first, ...rest] };
   }

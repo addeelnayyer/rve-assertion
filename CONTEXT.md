@@ -60,6 +60,18 @@ considers itself confidential refuses one that names an audience broader than
 itself. An audience is what makes an assertion usable for *this* call rather
 than for calls in general.
 
+**Generic assertion** — an assertion issued without any audience, and therefore
+scoped to no particular service. It is a conforming assertion, and it is the one
+a confidential service is entitled to turn away: such a service may be set up so
+that the only assertion it honours is one whose request named it.
+
+**Service policy** — what a caller knows about the regional service it is about
+to call, and cannot learn from the specification: the audience that names it,
+and whether it refuses a generic assertion. "Service policy" is this library's
+vocabulary, not the specification's; the specification describes the same thing
+as the organisation-level choices and policies that condition access to a
+confidential service.
+
 **Request context** — the declared purpose of the transaction the operator is
 performing, drawn from the regional vocabulary of purposes. The IAP checks the
 declared context against the contexts the calling application is permitted.

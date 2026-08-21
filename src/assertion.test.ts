@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { validateAssertion } from './assertion.js';
 import { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
+import { servicePolicy, type ServicePolicy } from './service-policy.js';
 
 const SAML_ASSERTION_XMLNS = 'urn:oasis:names:tc:SAML:2.0:assertion';
 
@@ -13,6 +14,12 @@ const ASSERTION_ID =
  * an identity, so that a test can assert no failure detail echoes it.
  */
 const PLANTED_IDENTITY = 'PLANTEDIDENTITY00X';
+
+/** The service every test validates against unless it says otherwise. */
+const SERVICE = 'https://fser.regione.veneto.it/Registry';
+
+/** A policy on the baseline: exact matching, generic assertions accepted. */
+const POLICY = servicePolicy({ audience: SERVICE });
 
 interface AssertionParts {
   readonly attributes?: string;
@@ -49,9 +56,9 @@ function bytes(xml: string): Uint8Array {
   return new TextEncoder().encode(xml);
 }
 
-/** The single failure a structural refusal carries, or a failing assertion. */
-function onlyFailure(input: Uint8Array) {
-  const result = validateAssertion(input);
+/** The single failure a refusal carries, or a failing assertion. */
+function onlyFailure(input: Uint8Array, policy: ServicePolicy = POLICY) {
+  const result = validateAssertion(input, policy);
   if (result.valid) {
     throw new Error('expected the assertion to be refused');
   }
@@ -61,7 +68,7 @@ function onlyFailure(input: Uint8Array) {
 
 describe('validateAssertion — the structural phase', () => {
   it('accepts a structurally complete assertion', () => {
-    expect(validateAssertion(bytes(assertionXml())).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), POLICY).valid).toBe(true);
   });
 
   it('reports exactly one failure for bytes that are not XML at all', () => {
@@ -202,8 +209,146 @@ describe('validateAssertion — the byte contract', () => {
     const input = bytes(assertionXml());
     const before = Uint8Array.from(input);
 
-    validateAssertion(input);
+    validateAssertion(input, POLICY);
 
     expect(input).toEqual(before);
+  });
+});
+
+/** A `Conditions` element carrying `inner`, and a window nothing here reads. */
+function conditionsWith(inner: string): string {
+  return [
+    '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2026-08-21T13:00:00Z">',
+    inner,
+    '</saml:Conditions>',
+  ].join('');
+}
+
+/** One `AudienceRestriction` naming `audiences`, of which there may be none. */
+function restriction(...audiences: readonly string[]): string {
+  return [
+    '<saml:AudienceRestriction>',
+    ...audiences.map((audience) => `<saml:Audience>${audience}</saml:Audience>`),
+    '</saml:AudienceRestriction>',
+  ].join('');
+}
+
+/** Whether the assertion carrying `conditions` validates against `policy`. */
+function accepts(conditions: string, policy: ServicePolicy = POLICY): boolean {
+  return validateAssertion(bytes(assertionXml({ conditions })), policy).valid;
+}
+
+const OTHER_SERVICE = 'https://sar.regione.veneto.it/demVisualizzaErogatoCUP';
+
+describe('validateAssertion — the audience', () => {
+  it('accepts an assertion scoped to the service about to be called', () => {
+    expect(accepts(conditionsWith(restriction(SERVICE)))).toBe(true);
+  });
+
+  it('accepts an assertion naming several services, one of which is this one', () => {
+    // §4.1.6.2.2 allows more than one Audience, and SAML 2.0 core makes them a
+    // disjunction: the assertion is scoped to any of the services it names.
+    expect(accepts(conditionsWith(restriction(OTHER_SERVICE, SERVICE)))).toBe(true);
+  });
+
+  it('accepts an audience an XML pretty-printer wrapped in whitespace', () => {
+    expect(accepts(conditionsWith(restriction(`\n        ${SERVICE}\n      `)))).toBe(true);
+  });
+
+  it('refuses an assertion scoped to some other service', () => {
+    const failure = onlyFailure(
+      bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+    );
+
+    expect(failure.code).toBe('audience-mismatch');
+    expect(failure.regionalErrorCode).toBe(REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED);
+  });
+
+  it('refuses an AudienceRestriction that names no service at all', () => {
+    // §4.1.6.2.2 permits zero Audience sub-elements. A restriction naming
+    // nobody restricts to nobody, so it is a mismatch rather than the generic
+    // assertion of §3.1.1 — the document did declare a restriction.
+    expect(onlyFailure(bytes(assertionXml({ conditions: conditionsWith(restriction()) }))).code).toBe(
+      'audience-mismatch',
+    );
+  });
+
+  it('requires every AudienceRestriction to name the service, not merely one of them', () => {
+    // SAML 2.0 core conjoins restrictions: each is a separate condition and all
+    // must hold. Fails closed on a document the region's own examples never
+    // produce — see docs/spec-questions.md (D-015).
+    const conditions = conditionsWith(restriction(SERVICE) + restriction(OTHER_SERVICE));
+
+    expect(onlyFailure(bytes(assertionXml({ conditions }))).code).toBe('audience-mismatch');
+  });
+
+  it('accepts an assertion whose every restriction names the service', () => {
+    expect(accepts(conditionsWith(restriction(SERVICE) + restriction(SERVICE, OTHER_SERVICE)))).toBe(
+      true,
+    );
+  });
+
+  it('compares exactly by default, refusing a host differing only in case', () => {
+    const conditions = conditionsWith(restriction('https://FSER.regione.veneto.it/Registry'));
+
+    expect(onlyFailure(bytes(assertionXml({ conditions }))).code).toBe('audience-mismatch');
+  });
+
+  it('accepts that same assertion once the caller asks for normalised matching', () => {
+    const normalising = servicePolicy({ audience: SERVICE, audienceMatching: 'normalised' });
+    const conditions = conditionsWith(restriction('https://FSER.regione.veneto.it/Registry'));
+
+    expect(accepts(conditions, normalising)).toBe(true);
+  });
+
+  it('never echoes the audience it found into the detail', () => {
+    const conditions = conditionsWith(restriction(`${OTHER_SERVICE}?patient=${PLANTED_IDENTITY}`));
+
+    expect(onlyFailure(bytes(assertionXml({ conditions }))).detail).not.toContain(PLANTED_IDENTITY);
+  });
+});
+
+describe('validateAssertion — a generic assertion', () => {
+  const CONFIDENTIAL = servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
+
+  it('accepts one, on the baseline policy', () => {
+    // The baseline is an inference from §4.1.8, Table 3, which marks the
+    // audience optional — not a statement §4.2.6 makes. D-012.
+    expect(accepts(conditionsWith(''))).toBe(true);
+  });
+
+  it('accepts one whose Conditions has no children at all', () => {
+    expect(validateAssertion(bytes(assertionXml()), POLICY).valid).toBe(true);
+  });
+
+  it('refuses one when the caller says the service refuses them', () => {
+    // §3.1.1's confidential service: it accepts only an assertion expressly
+    // requested for it.
+    const failure = onlyFailure(bytes(assertionXml({ conditions: conditionsWith('') })), CONFIDENTIAL);
+
+    expect(failure.code).toBe('audience-absent');
+    expect(failure.regionalErrorCode).toBe(REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED);
+  });
+
+  it('distinguishes it from an assertion scoped to the wrong service', () => {
+    // Two different corrections. An absent audience says this service needs a
+    // scoped request it never gets; a mismatch says a scoped assertion was
+    // reused across services. Both re-request, and a caller told only
+    // "audience" cannot tell which of its two bugs it has.
+    const scopedElsewhere = onlyFailure(
+      bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+      CONFIDENTIAL,
+    );
+
+    expect(scopedElsewhere.code).toBe('audience-mismatch');
+  });
+
+  it('does not reach the audience at all when the document is malformed', () => {
+    // The structural short-circuit, restated now that there is a later phase to
+    // short-circuit: a document with no Conditions has no audience to be
+    // missing, and reporting one would be reporting the same failure twice.
+    const failure = onlyFailure(bytes(assertionXml({ conditions: '' })), CONFIDENTIAL);
+
+    expect(failure.code).toBe('malformed');
   });
 });

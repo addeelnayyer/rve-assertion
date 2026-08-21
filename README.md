@@ -10,11 +10,12 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator has its entry point and its structural phase; its semantic phase —
-> validity window, audience, required attributes, identity cross-check,
-> signature integrity — is not written yet. **Do not spend an assertion on the
-> strength of `validateAssertion` returning valid in this build.** See
-> [Validating an assertion](#validating-an-assertion).
+> validator has its entry point, its structural phase and the audience check;
+> the rest of its semantic phase — validity window, required attributes,
+> identity cross-check, signature integrity — is not written yet. **Do not spend
+> an assertion on the strength of `validateAssertion` returning valid in this
+> build**: it does not yet establish that an assertion is in date or signed at
+> all. See [Validating an assertion](#validating-an-assertion).
 
 ## The regional code vocabulary
 
@@ -87,12 +88,18 @@ RVE-1.b is `Q-006`.
 ## Validating an assertion
 
 `validateAssertion` takes the raw bytes of a **bare `saml:Assertion` element**
-and returns a discriminated result.
+and the policy of the service about to be called, and returns a discriminated
+result.
 
 ```ts
-import { validateAssertion } from 'rve-assertion';
+import { servicePolicy, validateAssertion } from 'rve-assertion';
 
-const result = validateAssertion(assertionBytes);
+const registry = servicePolicy({
+  audience: 'https://fser.regione.veneto.it/Registry',
+  refusesGenericAssertions: true,
+});
+
+const result = validateAssertion(assertionBytes, registry);
 if (!result.valid) {
   for (const failure of result.failures) {
     log.warn(failure.code, failure.detail, failure.regionalErrorCode);
@@ -134,8 +141,53 @@ both directions — it does not accumulate structural failures, and it does not
 let the semantic phase run. Unparseable bytes have no audience to compare and no
 signature to bind, so a list of later failures would report things missing only
 because the document is. The semantic phase is the one that runs to completion
-and reports every reason; it arrives with the tickets that give it something to
-check.
+and reports every reason. It checks the audience today; the rest arrives with
+the tickets that give it something to check.
+
+## The service policy
+
+The policy is **caller-supplied**, and required — there is no validating an
+assertion without saying what it is about to be spent on. §3.1.1 is why: a
+highly confidential service may refuse an assertion created generically and
+accept only one requested expressly for it, and which services do that is
+decided by the organisation, not by the specification.
+
+`servicePolicy` is a smart constructor and throws `ServicePolicyError` on an
+audience that is not an absolute URL. It fills in `BASELINE_SERVICE_POLICY` for
+what the caller does not say:
+
+- `refusesGenericAssertions: false` — **an inference, labelled as one.** §4.2.6
+  has no information-content table of its own; the nearest is RVE-1.a's, which
+  marks the audience optional in both directions, and §4.1.6.2.2 makes the
+  element a `MAY`. Read across, a generic assertion is conforming. Nothing here
+  claims the specification states this for RVE-1.b — `D-012`, and `Q-001` for
+  why there is no RVE-1.b table to read.
+- `audienceMatching: 'exact'` — string comparison, after the whitespace
+  stripping `xs:anyURI` mandates. `'normalised'` is available per service and
+  applies the WHATWG URL form: lowercased scheme and host, default port dropped,
+  empty path written as `/`. Path case and a trailing slash stay significant.
+  Exact is the default because the X-Service Provider runs its own comparison
+  and a local *yes* against a remote *no* is worse than no local check —
+  `D-013`.
+
+An assertion naming several services is valid if one of them is this one, and an
+assertion carrying two `AudienceRestriction` elements must satisfy both, which
+is SAML 2.0 core's reading of an element §4.1.6.2.2 describes only in the
+singular (`D-015`).
+
+The two audience refusals are distinct codes. `audience-mismatch` says the
+assertion is scoped elsewhere; `audience-absent` says it is generic and this
+service was declared to refuse that. Both annotate `ERR_00044` and both are
+resolved by one re-request, but they are different bugs in the caller.
+
+**The policy carries no permitted contexts and no permitted roles**, and the
+omission is deliberate. An X-Service Provider weighs five attributes and can
+refuse on any of them; four are decided against boundary tables the organisation
+holds, which this library cannot see and cannot be told about when they change.
+A stale client-side copy fails closed and is fixed by a redeploy. The audience
+is the exception because the caller is the party that asked for it — checking it
+is confirming its own request was honoured, not re-deciding an entitlement.
+`D-014` has the argument and the cost.
 
 Three refusals are stricter than the specification demands, each argued in
 `docs/spec-questions.md`: bytes are decoded as UTF-8 strictly rather than

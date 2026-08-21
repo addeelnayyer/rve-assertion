@@ -38,7 +38,17 @@ export type {
   Rve1bRequestInput,
   Username,
 } from './request.js';
-export { RequestInputError } from './types.js';
+export {
+  audienceMatches,
+  BASELINE_SERVICE_POLICY,
+  servicePolicy,
+} from './service-policy.js';
+export type {
+  AudienceMatching,
+  ServicePolicy,
+  ServicePolicyInput,
+} from './service-policy.js';
+export { RequestInputError, ServicePolicyError } from './types.js';
 export {
   applicationIdShape,
   isRequestContext,

@@ -121,9 +121,8 @@ export const RVE_1B_ACTION = 'urn:rve:AuthenticateAndGetAssertionRequest-b';
  *
  * The specification names this one value and no other, and gives no code system
  * to draw further ones from, so {@link AuthenticationLevel} is a union of one.
- * Declaring a level at all is optional; declaring a different one is not
- * something the excerpt supports, so the smart constructor refuses it rather
- * than passing an unattested URN to the IAP.
+ * Declaring a level at all is optional; declaring a different one is refused,
+ * for the reasons in `docs/spec-questions.md` (D-007).
  */
 export const TWO_FACTOR_AUTHENTICATION_LEVEL = 'urn:rve:authnL2';
 

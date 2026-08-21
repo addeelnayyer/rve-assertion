@@ -34,10 +34,10 @@ const SAML_VERSION = '2.0';
 /**
  * Marks a `wsse:Username` as carrying ciphertext — §4.2.5.2.
  *
- * Unprefixed: the specification writes the rule in XPath as
- * `wsse:Username/@type`, which qualifies the element and leaves the attribute
- * in no namespace, and its worked handling in §4.2.5.3 reads it back the same
- * way. An unprefixed attribute is also the SAML and WS-Security norm.
+ * Unprefixed, which is a decision rather than a reading of an example: no
+ * worked request in the excerpt carries an encrypted username. Argued in
+ * `docs/spec-questions.md` (D-008), where the cost of being wrong about it is
+ * the highest of any choice the builder makes.
  */
 const ENCRYPTED_USERNAME_TYPE = 'encrypted';
 
@@ -95,8 +95,8 @@ export function buildRve1bRequest(request: Rve1bRequest): Uint8Array {
   header.ele(WS_ADDRESSING_NAMESPACE, 'wsa:MessageID').txt(request.messageId);
   header.ele(WS_ADDRESSING_NAMESPACE, 'wsa:To').txt(request.recipient);
 
-  // "MUST contain only the <wsse:Username> element" — so no wsse:Password, no
-  // wsu:Created, no nonce, whatever the username form.
+  // §4.2.5.2 confines the token to the username element alone — so no
+  // wsse:Password, no wsu:Created, no nonce, whatever the username form.
   const username = header
     .ele(WS_SECURITY_SECEXT_NAMESPACE, 'wsse:Security')
     .ele(WS_SECURITY_SECEXT_NAMESPACE, 'wsse:UsernameToken')

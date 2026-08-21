@@ -220,6 +220,15 @@ this decision rather than as an oversight in the table transcription. `C.4.2` is
 reproduced exactly as Table 5 gives it, on the same principle: the table is the
 vocabulary, and an IAP may well have implemented the row literally.
 
+The request builder is where this becomes visible to a caller. `rve1bRequest`
+re-checks the context at runtime rather than trusting the compiler, because the
+value usually arrives from tenant configuration as a plain string, and it throws
+on `C.1.6` with a message pointing here. One consequence is worth stating: the
+envelope builder's tests cannot use §4.2.5.2's worked request verbatim, so the
+test that pins the published example's namespace layout substitutes a context
+code the code system does define. Every other value in that fixture is the
+example's own.
+
 **The basis.** The check that matters happens at the IAP: the declared context
 must be a member of the set the organisation enabled for the calling
 ApplicationID (§4.2.5.3.1). A code absent from the regional code system cannot
@@ -379,10 +388,11 @@ list of FLS11 codes); the RVE-1.a assertion's attribute list _(number to
 confirm)_, which repeats the same wording; §4.2.5.2's worked request, which does
 not carry the attribute.
 
-**The statement.** `codAziendaAuth` conveys *the list* of FLS11 codes of the
-organisations that authorised document viewing or retrieval. Every other request
-attribute §4.2.5.2 defines is singular, and the worked example — which carries
-none of the optional attributes — shows one `AttributeValue` per `Attribute`.
+**The statement.** `codAziendaAuth` is defined as carrying a *list* of FLS11
+codes — one per organisation that authorised the document viewing or retrieval.
+Every other request attribute §4.2.5.2 defines is single-valued, and the worked
+example — which carries none of the optional attributes — shows one
+`AttributeValue` per `Attribute`.
 Nothing says whether a list is written as several `AttributeValue` children of
 one `Attribute`, as one delimited string in a single `AttributeValue`, or as
 several `Attribute` elements sharing a name. The three are not
@@ -485,14 +495,14 @@ investigation.
 ### D-004 — Timestamps are written as whole seconds in UTC with a `Z` suffix
 
 **Citations.** §4.2.5.2 (`IssueInstant`, `NotBefore` and `NotOnOrAfter`, each
-specified as "in UTC format", and the worked request that carries all three);
-XML Schema Part 2, `xs:dateTime`, which is the type SAML 2.0 declares these
-attributes as.
+of which it requires to be in UTC, and the worked request that carries all
+three); XML Schema Part 2, `xs:dateTime`, which is the type SAML 2.0 declares
+these attributes as.
 
-"UTC format" is not a lexical form. `xs:dateTime` admits fractional seconds and
-admits any timezone offset, so `2026-08-21T09:00:00.123456+00:00` and
-`2026-08-21T11:00:00+02:00` both name instants in UTC and both differ from what
-the specification's examples write. The examples — `2014-01-20T13:51:13Z`,
+Requiring UTC does not pin a lexical form. `xs:dateTime` admits fractional
+seconds and admits any timezone offset, so `2026-08-21T09:00:00.123456+00:00`
+and `2026-08-21T11:00:00+02:00` both name instants in UTC and both differ from
+what the specification's examples write. The examples — `2014-01-20T13:51:13Z`,
 `2013-10-15T16:09:30Z` — are the only evidence available, and they agree with
 one another: whole seconds, `Z` rather than `+00:00`, no fractional part.
 
@@ -555,3 +565,63 @@ Copying them would also mean declaring the `xsi` namespace for no other purpose.
 The cost: the output is not a byte-level match for the published example, and
 anyone diffing the two will see these attributes as the difference. That is why
 it is written down here rather than left to be rediscovered.
+
+### D-007 — An authentication level other than the one attested is refused
+
+**Citations.** §4.2.5.2 (the `authLevel` attribute, and the note that regional
+projects may provide for further request parameters, deferring their definition
+to RVE-1.d); §4.1.8, Table 3, which lists `authLevel` as Optional in both
+directions.
+
+`authLevel` is optional, and §4.2.5.2 names exactly one value for it — the URN
+declaring two-factor authentication. It gives no code system to draw others
+from, and unlike the request context (Q-004) there is no table to be a member
+of. Whether the region has since defined a level above or below it, this excerpt
+cannot say.
+
+The library models the attribute as a union of one: omit it, or declare the one
+level the specification attests. The smart constructor re-checks the value at
+runtime, since a level typically reaches it from the same tenant configuration
+the request context does.
+
+The basis is the asymmetry with Q-003. An ApplicationID is a value the AULSS
+allocated to the caller, so refusing an unrecognised one fails a deployment
+nobody on site can fix. An authentication level is a value the caller *chooses*,
+from a vocabulary of one, and an unattested URN is a claim about how the
+operator authenticated that no regional document backs — the sort of claim an
+IAP is entitled to reject, and one this library should not put on the wire
+silently.
+
+The cost: if the region has added a third level and this excerpt predates it, a
+caller entitled to declare it cannot, and there is no escape hatch short of a
+change here. The refusal is immediate and names the value it will accept, so the
+failure is a blocked feature and a fast question rather than a wrong assertion.
+
+### D-008 — The encrypted-username marker is written as an unprefixed attribute
+
+**Citations.** §4.2.5.2 (the rule signalling an encrypted username, written as
+`wsse:Username/@type`); §4.2.5.3 (the IAP's handling, which reads it back the
+same way); the worked request, which carries a plaintext username and therefore
+does not show the attribute at all.
+
+The specification writes the rule in XPath. In XPath, a prefix on the element
+step qualifies the element, and an unprefixed attribute name is in no namespace
+— so `wsse:Username/@type` names an unprefixed `type` attribute on a qualified
+`wsse:Username` element. Read as a literal fragment of XML instead, the same
+string could be taken to mean `type` is itself in the `wsse` namespace. No
+example settles it, because the only worked request sends a plaintext username.
+
+The library emits the unprefixed form. Both occurrences in the document are
+XPath — the rule and the IAP's handling of it — which is the reading that makes
+them consistent, and an unprefixed attribute on a qualified element is the norm
+throughout WS-Security and SAML, including every other attribute this library
+emits.
+
+The cost is the highest of any decision here, because unlike a namespace prefix
+on an element this one is not cosmetic: `type` and `wsse:type` are different
+attributes to a namespace-aware receiver. An IAP expecting the qualified form
+would not see the marker at all, and would then attempt to use ciphertext as a
+Directory Server username — a lookup failure reported as an unknown user, which
+names neither the attribute nor the encryption. A caller sending encrypted
+usernames should confirm this against its AULSS before going live; a caller
+sending plaintext ones is unaffected, since the attribute is then absent.

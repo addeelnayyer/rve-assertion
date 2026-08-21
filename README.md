@@ -8,8 +8,31 @@ for trusted applications*: an application that authenticates its own operators
 with its own credentials, trusted by the AULSS on the strength of mutual TLS and
 an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
-> **Status: in progress.** The scaffold and the MessageID-to-ID derivation are
-> in place. The request builder and the assertion validator are being added.
+> **Status: in progress.** The scaffold, the MessageID-to-ID derivation and the
+> regional code vocabulary are in place. The request builder and the assertion
+> validator are being added.
+
+## The regional code vocabulary
+
+The request context is a closed union over the regional clinical contexts code
+system, with `isRequestContext` as the guard for a value arriving from tenant
+configuration as a plain string. The ApplicationID is an opaque string that
+nothing validates, because the specification describes one format and
+demonstrates another; `applicationIdShape` reports which attested form a value
+takes and is advisory — no request is refused on the strength of it. Regional
+error codes are named constants, in both directions: the vocabulary a caller
+reads an inbound fault in, and the vocabulary the validator annotates its own
+refusals in.
+
+The code system's plain-language labels are deliberately absent — see
+[On the specification](#on-the-specification). Codes are reproduced because the
+library has to emit them; the words beside them in the source tables are not.
+
+One consequence is worth stating plainly: **this library refuses to build the
+request context that the specification's own worked request declares.** The code
+that example carries is not in the code system the same section confines the
+attribute to. The reasoning, and the cost of being wrong about it, are in
+`docs/spec-questions.md` (Q-004).
 
 ## Install and test
 

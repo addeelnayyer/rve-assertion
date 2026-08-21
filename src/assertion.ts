@@ -2,16 +2,19 @@
  * The assertion validator — §4.1.6.2.2, which §4.2.6 makes RVE-1.b's response
  * structure by reference.
  *
- * **Status: incomplete.** The structural phase, the validity window, the
- * audience, the attributes the calling service requires and the identity
- * cross-check are here; signature integrity is not. So a `valid: true` result
- * from this build means *this document is shaped like an assertion, the clock
- * is inside its window, it is scoped to the service it was checked against, it
- * carries what that service asked for, and it says one thing about who the
- * operator is* — and nothing more. It does not mean it was signed by anyone at
- * all. Until the remaining work lands, a caller must not read the success
- * branch as permission to spend the assertion. The README says the same thing
- * where a reader will meet it first.
+ * **Status: incomplete.** The structural phase, the structural signature
+ * phase, the validity window, the audience, the attributes the calling service
+ * requires and the identity cross-check are here. So a `valid: true` result
+ * from this build means *this document is shaped like an assertion, it carries
+ * a signature that claims to cover it, the clock is inside its window, it is
+ * scoped to the service it was checked against, it carries what that service
+ * asked for, and it says one thing about who the operator is* — and nothing
+ * more. It does **not** mean the signature was verified: nothing here verifies
+ * one cryptographically unless the caller supplies a verifier, and the success
+ * branch says so in a warning rather than leaving it to be assumed. Until the
+ * remaining work lands, a caller must not read the success branch as permission
+ * to spend the assertion. The README says the same thing where a reader will
+ * meet it first.
  *
  * ## What it is handed
  *
@@ -27,22 +30,30 @@
  * signed. So the bytes the caller passes are the bytes the caller still holds
  * afterwards: this module reads them and hands back nothing derived from them.
  *
- * ## Two phases, and why the first one stops
+ * ## Three phases, and why the first two stop
  *
  * The structural phase asks whether there is an assertion here at all:
- * parseable, an assertion element at the root, the attributes §4.1.6.2.2 makes
+ * parseable, an assertion element at the root, one assertion element in the
+ * whole document, the attributes §4.1.6.2.2 makes
  * mandatory, exactly one each of the elements it requires — the issuer, the
  * subject, and the conditions carrying the validity window — and one operator
  * identifier in the subject. It reports one
  * failure and stops, in both directions — it does not accumulate structural
- * failures, and it does not let the semantic phase run. Neither would be worth
+ * failures, and it does not let the later phases run. Neither would be worth
  * anything: a document that failed to parse has no audience to compare, no
  * window to check and no signature to bind, so every later check would report a
  * missing thing that is missing only because the document is.
  *
- * The signature is mandatory too and is deliberately not checked here: §4.1.6.2.2
- * makes it an element like the others, but its absence and its being malformed
- * map to different regional error codes, and this phase has one code to report.
+ * The signature is mandatory too and is deliberately not checked there:
+ * §4.1.6.2.2 makes it an element like the others, but its absence and its being
+ * malformed map to different regional error codes, and a phase with one code to
+ * report would collapse them. It gets its own phase, in `signature.ts`, which
+ * asks whether the signature covers *this* assertion: present, built of the
+ * elements §4.1.6.2.2 names, and carrying exactly one reference naming the
+ * assertion's own identifier. It reports one failure and stops too, for the
+ * same kind of reason — an assertion whose signature does not bind to it has no
+ * content worth an opinion, and reporting that its audience was also wrong
+ * would invite a caller to fix the audience.
  *
  * The semantic phase runs to completion and reports every failure it finds,
  * because by then the failures are independent: an assertion can be out of
@@ -94,6 +105,12 @@ import type { AssertionAttributes } from './assertion-attributes.js';
 import { SAML_ASSERTION_NAMESPACE } from './namespaces.js';
 import { REGIONAL_ERROR_CODES, type RegionalErrorCode } from './regional-error-codes.js';
 import { audienceMatches, type ServicePolicy } from './service-policy.js';
+import {
+  cryptographicVerification,
+  NO_SIGNATURE_VERIFICATION,
+  signatureIntegrity,
+  type SignatureVerifier,
+} from './signature.js';
 import { ValidationInputError } from './types.js';
 import { attribute, onlySamlChild, samlChildren, text } from './saml-dom.js';
 
@@ -142,13 +159,26 @@ const SAML_VERSION = '2.0';
  * resolved by one re-request, and a caller told only "audience" cannot tell
  * which of its two bugs it has.
  *
- * The last three are kept apart for the same reason again. A missing attribute
+ * The next three are kept apart for the same reason again. A missing attribute
  * is answered by a re-request; a missing authentication level escalates out of
  * the assertion layer entirely, to the session that has to acquire a second
  * factor; and an identity mismatch is answered by nothing a caller can do.
+ *
+ * The four signature verdicts are kept apart from each other and from
+ * `malformed` because they are four different conversations.
+ * `signature-absent` says the IAP returned an unsigned assertion;
+ * `signature-malformed` says it returned a signed one this library could not
+ * read, which is a defect to report to the AULSS; `signature-not-bound` says
+ * the signature covers something other than this assertion, which is the shape
+ * of an attack and may deserve an alert rather than a log line; and
+ * `signature-verification-failed` is the caller's own verifier speaking.
  */
 export type AssertionFailureCode =
   | 'malformed'
+  | 'signature-absent'
+  | 'signature-malformed'
+  | 'signature-not-bound'
+  | 'signature-verification-failed'
   | 'not-yet-valid'
   | 'expired'
   | 'audience-mismatch'
@@ -197,6 +227,39 @@ export interface AssertionFailure {
 }
 
 /**
+ * Something the caller should know about an assertion this library accepted.
+ *
+ * Not a failure and not a soft one. A warning never contributes to a refusal
+ * and carries no regional error code, because the region did not refuse
+ * anything either — every warning here describes a document the specification
+ * permits, or a check this library did not perform. It exists so that a caller
+ * can decide, with its own policy, what to do about either.
+ */
+export type AssertionWarningCode =
+  | 'deprecated-signature-algorithm'
+  | 'deprecated-digest-algorithm'
+  | 'signature-not-cryptographically-verified';
+
+/** One thing worth knowing about an accepted assertion. */
+export interface AssertionWarning {
+  readonly code: AssertionWarningCode;
+  readonly detail: string;
+}
+
+/**
+ * What a caller can supply to the validator beyond the assertion, the clock and
+ * the service policy.
+ *
+ * One seam so far. Cryptographic verification needs a key, a trust decision
+ * about that key and a canonicalisation implementation, none of which this
+ * library holds — see {@link SignatureVerifier}. Omitting it is supported and
+ * is the default, and the result says plainly that it happened.
+ */
+export interface AssertionValidationOptions {
+  readonly verifySignature?: SignatureVerifier;
+}
+
+/**
  * An assertion this library found no fault with.
  *
  * Reports what a caller needs from an assertion it did not build: who the
@@ -205,6 +268,18 @@ export interface AssertionFailure {
  */
 export interface ValidAssertion {
   readonly valid: true;
+
+  /**
+   * What was accepted about this assertion that a caller may still want to act
+   * on: a deprecated algorithm the region permits, and — in every build where
+   * the caller supplied no verifier — the fact that no signature was
+   * cryptographically verified.
+   *
+   * On the success branch rather than beside the failures, because none of it
+   * is a reason to refuse the assertion and none of it should be reachable
+   * where a caller is handling refusals.
+   */
+  readonly warnings: readonly AssertionWarning[];
 
   /**
    * The operator's tax code, as the subject's `NameID` carries it — §4.1.6.2.2
@@ -472,8 +547,9 @@ const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as
  * audiences themselves: the window comes off the same element, and reading half
  * of `Conditions` here and half in the phase that uses it would put the
  * document's shape in two places. The assertion element joins it for the same
- * reason, since the attribute statement hangs off that one. The signature joins
- * them when the check that reads it arrives.
+ * reason, since the attribute statement and the signature both hang off that
+ * one, and the assertion's own identifier joins them because the signature
+ * phase has to compare its reference against it.
  *
  * The subject identifier is read here rather than in the semantic phase because
  * §4.1.6.2.2 makes the subject carry it and there is no second place to look —
@@ -491,6 +567,15 @@ interface StructureRead {
   readonly assertion: Element;
   readonly conditions: Element;
   readonly subjectIdentifier: string;
+
+  /**
+   * The assertion's own `ID`, which the signature's reference has to name.
+   *
+   * Carried rather than re-read by the phase that compares against it: this
+   * phase has already established that the attribute is present and non-blank,
+   * and reading it a second time is a second chance to read it differently.
+   */
+  readonly id: string;
 }
 
 type StructuralRead = StructureRead | StructuralRefusal;
@@ -563,6 +648,20 @@ function readStructure(assertion: Uint8Array): StructuralRead {
     );
   }
 
+  // One assertion in the whole document, not merely one at the root. SAML
+  // permits an assertion to carry others inside `saml:Advice`, and this library
+  // refuses that: a second assertion anywhere in the tree is a second element a
+  // signature reference could have been pointing at, and the binding check in
+  // `signature.ts` is worth exactly as much as the assumption that there is one
+  // thing the signature can be about. Refusing the whole document is cheaper
+  // and more certain than reasoning about which nested assertions are harmless.
+  // Argued in `docs/spec-questions.md` (D-024).
+  if (document.getElementsByTagNameNS(SAML_ASSERTION_NAMESPACE, ASSERTION_ELEMENT).length !== 1) {
+    return refused(
+      'the document carries more than one Assertion element. Exactly one is accepted, so that there is exactly one element a signature reference can be about.',
+    );
+  }
+
   if (attribute(element, 'Version') !== SAML_VERSION) {
     return refused(`the assertion does not declare Version "${SAML_VERSION}".`);
   }
@@ -625,12 +724,21 @@ function readStructure(assertion: Uint8Array): StructuralRead {
   // reports both bounds failing, which is the whole truth about it and needs
   // nothing invented. Refusing a window for its *length* is a different
   // question, and its answer belongs to the party holding the policy — D-013.
+  const id = attribute(element, 'ID');
+  if (id === undefined) {
+    // Unreachable: ID is one of the required attributes checked above. Written
+    // as a return rather than an assertion for the same reason the subject and
+    // conditions case above is.
+    return refused('the assertion carries no ID attribute.');
+  }
+
   return {
     read: true,
     window: { notBefore: notBefore.instant, notOnOrAfter: notOnOrAfter.instant },
     assertion: element,
     conditions,
     subjectIdentifier,
+    id,
   };
 }
 
@@ -994,15 +1102,17 @@ function checkIdentity(
  * confidential services make "is this assertion acceptable" a question that
  * cannot be asked without naming the service asking it.
  *
- * **Incomplete — see the module comment.** The structure, the validity window,
- * the audience, the attributes the service requires and the operator's identity
- * are checked; the signature is not, so a valid result does not establish that
- * this assertion was signed by anyone.
+ * **Incomplete — see the module comment.** The structure, the signature's
+ * structure and binding, the validity window, the audience, the attributes the
+ * service requires and the operator's identity are checked. The signature is
+ * verified only if `options.verifySignature` says so, and a valid result
+ * carries a warning saying which of those happened.
  */
 export function validateAssertion(
   assertion: Uint8Array,
   time: AssertionTimeModel,
   policy: ServicePolicy,
+  options: AssertionValidationOptions = {},
 ): AssertionValidation {
   checkTimeModel(time);
 
@@ -1011,8 +1121,23 @@ export function validateAssertion(
     return { valid: false, failures: [structure.failure] };
   }
 
-  // The semantic phase: every check runs, and every failure is reported. The
-  // signature check joins the list here when it is written.
+  // The signature phase, before the semantic one and short-circuiting like the
+  // structural phase: an assertion whose signature does not cover it has an
+  // audience and a window nobody vouched for.
+  const integrity = signatureIntegrity(structure.assertion, structure.id);
+  if (!integrity.ok) {
+    return { valid: false, failures: [integrity.failure] };
+  }
+
+  const verification = cryptographicVerification(
+    assertion,
+    options.verifySignature ?? NO_SIGNATURE_VERIFICATION,
+  );
+  if (!verification.ok) {
+    return { valid: false, failures: [verification.failure] };
+  }
+
+  // The semantic phase: every check runs, and every failure is reported.
   const attributes = readAssertionAttributes(structure.assertion);
   const { failures: windowFailures, usableUntil } = checkWindow(structure.window, time);
   const { failures: levelFailures, authenticationLevel } = checkAuthenticationLevel(
@@ -1033,6 +1158,7 @@ export function validateAssertion(
 
   return {
     valid: true,
+    warnings: [...integrity.warnings, ...verification.warnings],
     operatorTaxCode: structure.subjectIdentifier,
     audiences: audiences(structure.conditions),
     authenticationLevel,

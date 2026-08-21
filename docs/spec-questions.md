@@ -431,6 +431,78 @@ itself, which is why it is written down.
 
 ---
 
+### Q-008 — The specification attests a deprecated signature algorithm, and then uses it in its own worked assertion
+
+**Citations.** §4.1.6.2.2 (the `ds:Signature` structure, which names two
+signature algorithms and two digest algorithms and deprecates one of each);
+the worked RVE-1.b assertion in the same
+section, whose `ds:SignatureMethod` and `ds:DigestMethod` are both the
+deprecated ones; Appendix A.5, Table 8 (`ERR_00012`).
+
+**The statement.** §4.1.6.2.2 offers RSA-SHA-1 and RSA-SHA-256 for the
+signature, and SHA-1 and SHA-256 for the digest, deprecating the SHA-1 member of
+each pair. It then signs its own worked assertion
+with both of them. So the document permits SHA-1, discourages SHA-1, and
+demonstrates SHA-1, and it does not say when the permission ends.
+
+This library both accepts SHA-1 and calls it a risk, and those two have to be
+read together or they look like a contradiction. They are not. The acceptance is
+a statement about what an IAP is entitled to send today; the risk is a statement
+about what a caller should be prepared to stop accepting. SHA-1 is
+collision-broken, and a signature algorithm whose digest can be collided is one
+an attacker with the right resources can move to a document the signer never
+saw. That is a real weakness in a credential that authorises access to a
+patient's record — and it is also, today, conforming, regionally attested, and
+what at least one worked example does.
+
+**What the code does.** Accepts the deprecated algorithm and reports it as a
+non-fatal **warning on the success branch** — `deprecated-signature-algorithm`
+and `deprecated-digest-algorithm`, in `src/signature.ts`. A warning carries no
+regional error code, because the region did not refuse anything: it never
+contributes to a refusal, and it is unreachable from the failure branch where a
+caller handles rejections.
+
+The reason is stated at the site rather than only here, so that a reader of the
+code meets the argument where the decision is.
+
+In the other direction, an algorithm **outside** the attested pair — in either
+slot — is refused as `signature-malformed`. The section gives a closed list of
+two in each position, and a validator that accepted any URI in the algorithm
+slot would pass on to its verifier an assertion signed with something no
+regional document blesses, including something weaker than the algorithm it
+already deprecates.
+
+**The basis.** Refusing SHA-1 would refuse a document the specification permits,
+demonstrates, and that a conforming IAP may well emit — a pediatrician unable to
+open a record because this library disagreed with the region about
+cryptographic policy. That is a decision for the deployment, not for a parsing
+library, and the warning is what puts it there: a caller with a policy against
+SHA-1 has everything it needs to enforce one, in the result it is already
+holding, without this library imposing that policy on callers who cannot yet
+afford it.
+
+**The cost.** A caller that ignores warnings accepts SHA-1-signed assertions
+indefinitely and never learns it is doing so. This library will not stop it, and
+the failure mode — a forged assertion accepted on a collided signature — is
+silent and severe. The mitigation available here is that the warning exists and
+is named precisely enough to alert on; the mitigation that matters is the
+region withdrawing the algorithm, which is what the question below asks about.
+
+**The question as it would be sent.**
+
+> §4.1.6.2.2 permits both `rsa-sha1` and `rsa-sha256` for `ds:SignatureMethod`,
+> and both `sha1` and `sha256` for `ds:DigestMethod`, marking the SHA-1 variants
+> as deprecated — but the worked RVE-1.b assertion in that same
+> section is signed with `rsa-sha1` and digested with `sha1`. Two questions. Is
+> there a date, or a planned version, after which an IAP will no longer issue
+> SHA-1-signed assertions, so that an X-Service User can plan to reject them?
+> And are the two algorithm lists closed — that is, may an IAP sign with
+> something outside the four named, such as `rsa-sha512`, and should a client
+> accept one that does? We currently accept the deprecated algorithms with a
+> warning and refuse anything outside the lists.
+
+---
+
 ## Decisions where the specification is silent
 
 Not contradictions — points the specification simply does not settle, where the
@@ -1109,3 +1181,36 @@ service demanded a second factor, and on this path none did. See D-022.
 The cost: if the region later defines `authLevel` as a list — as it did define
 `codAziendaAuth` as one (Q-007) — this refuses a conforming assertion, and the
 fix is here rather than in a caller's configuration.
+
+### D-024 — A document carrying more than one assertion element is refused
+
+**Citations.** §4.1.6.2.2 (the assertion structure, and the `ds:Reference`
+that must name the assertion's own `ID` preceded by `#`); §4.6 (the assertion
+carried in a `wsse:Security` header, without modification of any kind); SAML
+2.0, which permits `saml:Advice` to carry further assertions.
+
+The specification describes one assertion, and every worked example shows one.
+It does not say what a client should do with a document containing two, because
+from its point of view the question does not arise. SAML itself, however,
+permits nested assertions inside `saml:Advice`, so a document with several is
+not malformed in the ambient standard.
+
+The validator refuses any document carrying more than one assertion element
+anywhere in the tree, including a nested one in `saml:Advice`, and reports it
+as `malformed` with the detail naming the reason.
+
+The reason is signature wrapping. The binding check in `src/signature.ts`
+insists that the signature's single reference name the assertion's own
+identifier, which is what stops a signature from covering something other than
+the document being read. That check is worth exactly as much as the assumption
+behind it: that there is one assertion for a reference to be about. A second
+assertion in the tree is a second candidate — one that a differently written
+reader, or a later refactor of this one, might read instead of the one the
+signature covers. Refusing the document outright is cheaper and more certain
+than reasoning about which nested assertions are harmless, and no RVE-1.b
+assertion this library has seen needs one.
+
+The cost: an IAP that legitimately carried an advisory assertion inside
+`saml:Advice` would have its assertions refused. Nothing in the excerpt suggests
+the region does this, and the refusal names its own reason, so the failure is a
+loud question rather than a silent acceptance.

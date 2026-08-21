@@ -3,10 +3,14 @@
  *
  * Nothing here is SAML-specific beyond the namespace it filters on: these are
  * the two questions every phase of the validator asks a parsed document —
- * *which children of this element are the SAML element I mean*, and *what does
- * this attribute say* — and they are shared rather than duplicated because two
+ * *which children of this element are the element I mean*, and *what does this
+ * attribute say* — and they are shared rather than duplicated because two
  * modules asking them differently is how a namespace check quietly stops being
  * a namespace check.
+ *
+ * The SAML-named pair are the common case and read as one call; the signature
+ * phase reads `ds:` elements through the same walk with its own namespace,
+ * rather than through a second walk written to a different standard of care.
  *
  * Reads only. Nothing here constructs, mutates or serialises a node: §4.6
  * requires the assertion be spent exactly as the Identity and Assertion
@@ -40,18 +44,40 @@ const CDATA_SECTION_NODE = 4;
  * meaning in XML, so a document is free to bind `saml:` to something else and
  * the real assertion namespace to a prefix of its choosing.
  */
-export function samlChildren(element: Element, localName: string): readonly Element[] {
+export function childElements(
+  element: Element,
+  namespaceURI: string,
+  localName: string,
+): readonly Element[] {
   const children: Element[] = [];
   for (const node of Array.from(element.childNodes)) {
     if (node.nodeType !== ELEMENT_NODE) {
       continue;
     }
     const child = node as Element;
-    if (child.namespaceURI === SAML_ASSERTION_NAMESPACE && child.localName === localName) {
+    if (child.namespaceURI === namespaceURI && child.localName === localName) {
       children.push(child);
     }
   }
   return children;
+}
+
+/** {@link childElements}, for the SAML assertion namespace. */
+export function samlChildren(element: Element, localName: string): readonly Element[] {
+  return childElements(element, SAML_ASSERTION_NAMESPACE, localName);
+}
+
+/**
+ * The one direct child of `element` with this namespace and local name, or
+ * `undefined` when there is not exactly one.
+ */
+export function onlyChild(
+  element: Element,
+  namespaceURI: string,
+  localName: string,
+): Element | undefined {
+  const children = childElements(element, namespaceURI, localName);
+  return children.length === 1 ? children[0] : undefined;
 }
 
 /**
@@ -64,8 +90,7 @@ export function samlChildren(element: Element, localName: string): readonly Elem
  * readers picking differently.
  */
 export function onlySamlChild(element: Element, localName: string): Element | undefined {
-  const children = samlChildren(element, localName);
-  return children.length === 1 ? children[0] : undefined;
+  return onlyChild(element, SAML_ASSERTION_NAMESPACE, localName);
 }
 
 /**

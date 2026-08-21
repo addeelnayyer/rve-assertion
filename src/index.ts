@@ -4,7 +4,9 @@
  * Builds RVE-1.b request envelopes and validates the assertions the Identity
  * and Assertion Provider returns. It performs no network I/O, holds no cache,
  * manages no tenant configuration, and does not cryptographically verify
- * signatures. See README.md for the seams it exposes for each of those.
+ * signatures — for that last one, `verifySignature` is the seam and
+ * {@link NO_SIGNATURE_VERIFICATION} is the default that declines to.
+ * See README.md for the seams it exposes for each of those.
  */
 
 export {
@@ -13,6 +15,7 @@ export {
   SOAP_ENVELOPE_NAMESPACE,
   WS_ADDRESSING_NAMESPACE,
   WS_SECURITY_SECEXT_NAMESPACE,
+  XML_SIGNATURE_NAMESPACE,
 } from './namespaces.js';
 export {
   RECOMMENDED_CLOCK_SKEW_MS,
@@ -24,11 +27,16 @@ export type {
   AssertionFailureCode,
   AssertionTimeModel,
   AssertionValidation,
+  AssertionValidationOptions,
+  AssertionWarning,
+  AssertionWarningCode,
   InvalidAssertion,
   ValidAssertion,
 } from './assertion.js';
 export { ASSERTION_ATTRIBUTES } from './assertion-attributes.js';
 export type { AssertionAttributes } from './assertion-attributes.js';
+export { NO_SIGNATURE_VERIFICATION } from './signature.js';
+export type { SignatureVerification, SignatureVerifier } from './signature.js';
 export { REGIONAL_ERROR_CODES } from './regional-error-codes.js';
 export type { RegionalErrorCode } from './regional-error-codes.js';
 export { buildRve1bRequest } from './request-envelope.js';

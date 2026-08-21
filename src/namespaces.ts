@@ -34,3 +34,14 @@ export const SAML_PROTOCOL_NAMESPACE = 'urn:oasis:names:tc:SAML:2.0:protocol';
 
 /** SAML 2.0 assertion — §4.2.5.2, the default namespace in its example. */
 export const SAML_ASSERTION_NAMESPACE = 'urn:oasis:names:tc:SAML:2.0:assertion';
+
+/**
+ * XML Signature — §4.1.6.2.2, prefix `ds`.
+ *
+ * On the validation side rather than the request side: this library builds no
+ * signature and this namespace never appears in an envelope it emits. It is
+ * here because the assertion validator reads the signature by namespace, and
+ * because a caller writing an XPath against a received assertion needs the same
+ * URI the validator used.
+ */
+export const XML_SIGNATURE_NAMESPACE = 'http://www.w3.org/2000/09/xmldsig#';

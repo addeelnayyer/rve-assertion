@@ -76,3 +76,13 @@ describe('applicationIdShape', () => {
     expect(() => applicationIdShape('^^^')).not.toThrow();
   });
 });
+
+describe('isRequestContext — a value that is not a string', () => {
+  // The guard exists for values arriving from tenant configuration, where the
+  // compiler was never involved: a JSON file can hand over a number as easily
+  // as a code, and a lookup that assumed a string would be asking a Set about
+  // something that cannot be in it.
+  it.each([42, null, undefined, {}, ['C.1.1']])('rejects %s', (value) => {
+    expect(isRequestContext(value)).toBe(false);
+  });
+});

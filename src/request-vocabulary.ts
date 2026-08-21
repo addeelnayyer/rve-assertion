@@ -98,7 +98,10 @@ const REQUEST_CONTEXT_LOOKUP: ReadonlySet<string> = new Set(REQUEST_CONTEXTS);
  * tenant is a startup failure or a per-request one.
  */
 export function isRequestContext(value: unknown): value is RequestContext {
-  return typeof value === 'string' && REQUEST_CONTEXT_LOOKUP.has(value);
+  // The set membership is the whole check. A `Set` compares by value, so a
+  // number, a null or an object is simply not in a set of strings, and a
+  // `typeof` guard in front of this would be a second way of saying so.
+  return REQUEST_CONTEXT_LOOKUP.has(value as RequestContext);
 }
 
 /**

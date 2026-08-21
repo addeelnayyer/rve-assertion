@@ -8,16 +8,18 @@ for trusted applications*: an application that authenticates its own operators
 with its own credentials, trusted by the AULSS on the strength of mutual TLS and
 an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
-> **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
-> regional code vocabulary and the request builder are in place. The assertion
-> validator has its structural phase, its structural signature phase, its
-> validity-window check, its audience check, the attributes the calling service
-> requires, the identity cross-check and the remedy derived from a refusal.
+> **Status: complete for the scope this library claims.** Both functions are in
+> place — the request builder with the MessageID-to-ID derivation and the
+> regional code vocabulary behind it, and the validator with its structural
+> phase, its structural signature phase, its validity-window check, its audience
+> check, the attributes the calling service requires, the identity cross-check
+> and the single remedy derived from a refusal.
 > **Do not spend an assertion on the
-> strength of `validateAssertion` returning valid in this build**: no signature
-> is cryptographically verified unless the caller supplies a verifier, and the
+> strength of `validateAssertion` returning valid**: no signature is
+> cryptographically verified unless the caller supplies a verifier, and the
 > success branch says so in a warning.
-> See [Validating an assertion](#validating-an-assertion).
+> See [Validating an assertion](#validating-an-assertion) and
+> [What it does not do](#what-it-does-not-do).
 
 ## The regional code vocabulary
 
@@ -30,6 +32,20 @@ takes and is advisory — no request is refused on the strength of it. Regional
 error codes are named constants, in both directions: the vocabulary a caller
 reads an inbound fault in, and the vocabulary the validator annotates its own
 refusals in.
+
+The union is closed, and the cost of that is worth naming before someone meets
+it in production. `RequestContext` enumerates the codes Appendix A.2 defines,
+and `rve1bRequest` refuses anything outside them even where the compiler was
+told otherwise. So a context code the region adds *after* this release is not
+merely unrecognised — it cannot be sent at all, and no tenant configuration can
+route around it. Adopting it takes a release of this library, and until that
+release ships the tenant that needs it is blocked on a version bump rather than
+on a setting. The trade is deliberate: an open string would let a typo travel to
+the IAP and come back as an opaque regional error, which is the failure this
+library exists to move to the call site. If the region turns out to change its
+code system faster than a release cycle can follow, the thing to build is a
+caller-supplied list of additional codes — still a closed set, just one the
+caller closes — rather than an open string.
 
 The code system's plain-language labels are deliberately absent — see
 [On the specification](#on-the-specification). Codes are reproduced because the
@@ -514,6 +530,157 @@ a coincidence — see below.
 npm run typecheck   # tsc --noEmit
 ```
 
+### Mutation testing
+
+The suite is worth what it catches, not what it runs, so it was run under
+[StrykerJS](https://stryker-mutator.io/) locally: 914 mutants over `src/`, of
+which **900 are killed — a mutation score of 98.47%**. What the first run found
+was fixed rather than explained away, and two kinds of thing came back:
+
+- **Tests that were not failing when they should.** Fixtures built at module or
+  `describe` scope took a throwing constructor down with them, so the file
+  reported no results at all and a runner counting outcomes read that as a suite
+  with nothing wrong in it. Fixtures are now built inside the test that uses
+  one.
+- **Checks nothing could reach.** Four guards were unreachable by construction
+  — the compiler wanted each one, and no input could arrive at it, because a
+  count above had already answered the question. Each is now the single place
+  its question is asked, so every one of them is a check some test holds to
+  being right.
+
+The tool is deliberately **not a dependency of this package**. Installing it
+would put a slow job in front of a reviewer's first `npm install`, against the
+same reasoning that chose pure-JavaScript XML libraries. To reproduce the run:
+
+```sh
+npm install --no-save @stryker-mutator/core @stryker-mutator/vitest-runner
+npx stryker run --testRunner vitest --mutate 'src/**/!(*.test).ts'
+```
+
+`--no-save` is the point: nothing is added to `package.json`, and the report
+lands in `reports/`, which is ignored.
+
+**Fourteen mutants survive, and all of them are equivalent** — they change the
+source without changing anything observable through the two public functions.
+They fall into four groups:
+
+| Survivors | Where | Why nothing can kill it |
+|---|---|---|
+| 2 | `[CHECKED]: true` in each smart constructor | **The deliberate one.** The brand exists so the type cannot be forged; nothing reads its value at runtime, so flipping it to `false` changes no behaviour. A phantom type would leave no mutant, and would also leave no runtime evidence that a value came from the constructor. |
+| 2 | The `^` and `$` on the assertion timestamp pattern | The pattern is anchored so that what this library refuses does not depend on which engine's `Date.parse` fallback is running. On V8 that fallback refuses the same values, so on this runtime the anchors are unobservable — which is the point of having them. |
+| 5 | `catch { return undefined }` emptied to `catch {}` (twice); the `documentElement === null` guard; two `?? ''` fallbacks behind checks that already passed | An emptied `catch` returns `undefined` just as the body did, and the two guards stand behind a parser that cannot return what they test for. |
+| 5 | The non-element skip in `childElements` (twice), the `xmlns` namespace constant, and the `'current'` standing of the two non-deprecated algorithms | Each is a value the code never branches on differently: a text node matches no namespace and local name, and an algorithm that is attested and not deprecated is treated the same whatever the label beside it says. |
+
+The brief asked for one deliberately surviving mutant. It is the constructor
+brand, in the first row — and it appears twice because there are two smart
+constructors making the same bargain. The rest are the tool's normal equivalent
+noise, listed rather than filtered so that the score above can be checked.
+
+### The twelve tests
+
+The suite runs 391 assertions, but twelve of them are the argument.
+Each pins a decision that was actually made, so a reader can see which choice
+each one defends; the rest fill in around them. Four are mandated by the
+exercise brief and are marked **(brief)**. The fifth required test — the
+namespace layout — is this repository's own, because an IAP that parses by
+string rather than by namespace is a real risk the brief does not name.
+
+| # | What it pins | Test |
+|---|---|---|
+| 1 | **(brief)** The MessageID-to-ID derivation produces the specified form | `src/request.test.ts` — *strips the `urn:uuid:` scheme prefix and applies the `msgId_` prefix* |
+| 2 | **(brief)** An expired assertion is invalid, with the expiry failure distinguishable from every other | `src/assertion.test.ts` — *reports the assertion as expired after its window closes* |
+| 3 | **(brief)** An audience mismatch is invalid, distinguishably | `src/assertion.test.ts` — *refuses an assertion scoped to some other service* |
+| 4 | **(brief)** A missing authentication level is invalid where the policy required one | `src/assertion.test.ts` — *distinguishes a missing authentication level from every other failure* |
+| 5 | The built envelope declares its namespaces where §4.2.5.2's example declares them | `src/request-envelope.test.ts` — *emits the attribute statement and the conditions in the default SAML namespace, and prefixes the rest* |
+| 6 | The derivation rejects a non-UUID, keeps an uppercase UUID's case, and rejects an absent scheme prefix | `src/request.test.ts` — the three tests under `deriveRequestId` named for each |
+| 7 | A signature reference bound to anything but the assertion's own identifier is malformed — the wrapping guard | `src/assertion.test.ts` — *distinguishes a reference bound elsewhere from a signature that is merely malformed* |
+| 8 | An assertion both expired and wrongly scoped yields two distinguishable failures whose aggregate is a **scoped re-request, not a refresh** | `src/assertion.test.ts` — *answers an expired and wrongly scoped assertion with a scoped re-request, not a refresh* |
+| 9 | Round trip: the built envelope's SAML identifier equals the derivation applied to its own message ID | `src/request-envelope.test.ts` — *carries an identifier equal to the derivation applied to its own message ID* |
+| 10 | Several audiences with one matching is valid | `src/assertion.test.ts` — *accepts an assertion naming several services, one of which is this one* |
+| 11 | A subject that is not the responsible party is unrecoverable, not retryable | `src/assertion.test.ts` — *marks the mismatch unrecoverable rather than retryable* |
+| 12 | Unparseable bytes produce exactly one failure, proving the short-circuit | `src/assertion.test.ts` — *reports exactly one failure for bytes that are not XML at all* |
+
+Number 8 is the most valuable of the twelve. It is the one that proves the
+subsumption design rather than restating it: nothing in it asserts a ranking, so
+if the remedy were derived from a hardcoded order instead of from the mapping,
+it would fail.
+
+Beside them sits the deliberate divergence, named so that it reads as the
+decision it is rather than as a defect: *rejects C.1.6, the request context code
+§4.2.5.2's worked request carries* in `src/request-vocabulary.test.ts`. The
+reasoning is Q-004 in [`docs/spec-questions.md`](docs/spec-questions.md).
+
+Tests assert on what the two public functions return — the bytes out of the
+builder and the discriminated result out of the validator. They do not reach
+into module internals. The smart constructors' throwing is exercised through
+the builder, and the remedy derivation through the validator, so that the
+aggregate is asserted in the same call that produces the failures it aggregates.
+`src/index.test.ts` is the one exception and asserts nothing about behaviour: it
+pins the published names, so that adding or dropping one is a decision rather
+than an accident.
+
+
+### Mutation testing
+
+A test suite that passes proves the tests run, not that they would notice if the
+logic broke. Mutation testing asks the second question: change the code on
+purpose, and see whether a test fails.
+
+The run is local and the tool is **not a dependency of this package**. Stryker
+is installed for the run and removed after it, so a clean clone still installs
+without it:
+
+```sh
+npm install --no-save @stryker-mutator/core @stryker-mutator/vitest-runner
+npx stryker run
+```
+
+`stryker.conf.json` is committed so the run is reproducible; the report it
+writes to `reports/` is not, and that path is ignored.
+
+**Score: 92.4%** — 849 of 919 mutants killed, 62 survived, 8 uncovered. What the
+run found and what was done about it:
+
+| Found | Done |
+|---|---|
+| `readStructure` checked `ID`, `Subject` and `Conditions` for presence in a loop and then read each one again, so the second check could not fail | Each is now checked where it is read. One question that both refuses and produces the value is a question every input reaches — the unreachable branches are gone rather than annotated |
+| `checkAuthenticationLevel` computed the level before establishing the assertion did not attest two | The level is read only once the assertion is known not to contradict itself, so the value reported is the one attested rather than the first of two |
+| `isUri` and `checkedAudience` asked whether a value parsed by parsing it inside a `try` | Both use `URL.canParse`. The question is asked directly, leaving no catch block whose body is unobservable from outside the function |
+| `audienceMatches` policies were built once in a `describe` body, where a throw loses the whole file | Built per test, so a failure names its reason |
+
+The score moved from 85.7% to 92.4%.
+
+**The deliberate survivor.** One mutant survives because it is *equivalent* —
+no test can kill it, and the day one can, the code will be wrong.
+
+`src/remedy.ts:291` — `withAuthenticationLevel ?? TWO_FACTOR_AUTHENTICATION_LEVEL`.
+Replacing `??` with `&&` survives, because `AuthenticationLevel` is today a union
+of one (D-007): both sides of the operator are the same value, so the two forms
+cannot be told apart by any input. The fallback is kept anyway. A step-up remedy
+naming no level is one a caller cannot execute, and when the region publishes a
+second level the service's requirement is the side that must win — at which
+point this mutant becomes killable and a test will pin it. See D-026 in
+[`docs/spec-questions.md`](docs/spec-questions.md). Deleting the fallback to
+reach a higher score would trade a correct remedy for a number.
+
+**The rest, and why they are not chased.** The remaining survivors fall into
+three classes, none of which a test could kill without making the suite worse:
+
+- **Message prose (25).** Mutating a `detail` or warning string to `""`
+  survives, because tests assert on the discriminated `code` and
+  `regionalErrorCode` a caller branches on, never on the sentence beside them.
+  Asserting the prose would pin wording that is meant to be rewritten.
+- **Defensive DOM guards (~20, mostly `src/saml-dom.ts` and
+  `src/signature.ts`).** Guards against node shapes `@xmldom/xmldom` does not
+  produce. Reaching them needs a hand-built DOM the parser cannot emit, which
+  would test the fixture rather than the library.
+- **Equivalent mutants (the remainder).** `.map((a) => text(a))` against
+  `.map(text)`; `name.trim()` against `name` where the value was trimmed on the
+  way in. Different source, same behaviour, by construction.
+
+Chasing any of the three would raise the number and lower the suite's value,
+which is the failure mode mutation testing is most often used to cause.
+
 ## What it does not do
 
 It performs no network I/O, holds no cache, manages no tenant configuration, and
@@ -550,6 +717,20 @@ Development dependencies are limited to TypeScript, Vitest and Node types.
   contradicts or fails to settle something. Each entry carries the section
   citations, what the code does, the basis, the cost, and the question as it
   would be sent to the specification's authors.
+
+## AI tools
+
+This library was written with AI assistance — Claude Code (Anthropic) — used to
+read the specification excerpt against the code, draft the implementation and
+the tests, and write this README and `docs/spec-questions.md`. The decisions the
+code makes where the specification contradicts itself or says nothing are
+recorded in [`docs/spec-questions.md`](docs/spec-questions.md), and each was
+reviewed and accepted by the author, who is answerable for it. The excerpt was
+handled under the same no-redistribution condition it was shared under, and no
+text from it appears in this repository.
+
+The same declaration appears in the accompanying document. It is repeated here
+because the repository is what survives if the two are separated.
 
 ## On the specification
 

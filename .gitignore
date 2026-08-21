@@ -7,3 +7,9 @@ coverage/
 # must never be committed. Keep a local copy here to work against; cite it by
 # section number only. See the "On the specification" section of README.md.
 *.pdf
+
+# Mutation testing writes its report and its sandboxes here. The tool is run
+# locally and is not a dependency of this package — see the "Mutation testing"
+# section of README.md.
+reports/
+.stryker-tmp/

@@ -93,41 +93,44 @@ describe('servicePolicy — what it refuses to build', () => {
 });
 
 describe('audienceMatches — exact, which is the default', () => {
-  const policy = servicePolicy({ audience: AUDIENCE });
+  // Built per test, not once in the describe body: a describe body runs during
+  // collection, so a policy that throws there loses the whole file rather than
+  // failing the test that would have named the reason.
+  const policy = () => servicePolicy({ audience: AUDIENCE });
 
   it('matches the identical string', () => {
-    expect(audienceMatches(policy, AUDIENCE)).toBe(true);
+    expect(audienceMatches(policy(), AUDIENCE)).toBe(true);
   });
 
   it('matches across the surrounding whitespace a pretty-printer adds', () => {
     // xs:anyURI collapses whitespace, so leading and trailing space is not part
     // of the value and stripping it is the schema's behaviour, not this
     // library's normalisation.
-    expect(audienceMatches(policy, `\n      ${AUDIENCE}\n    `)).toBe(true);
+    expect(audienceMatches(policy(), `\n      ${AUDIENCE}\n    `)).toBe(true);
   });
 
   it('does not match a host differing only in case', () => {
-    expect(audienceMatches(policy, 'https://FSER.regione.veneto.it/Registry')).toBe(false);
+    expect(audienceMatches(policy(), 'https://FSER.regione.veneto.it/Registry')).toBe(false);
   });
 
   it('does not match the same service with a trailing slash', () => {
-    expect(audienceMatches(policy, `${AUDIENCE}/`)).toBe(false);
+    expect(audienceMatches(policy(), `${AUDIENCE}/`)).toBe(false);
   });
 
   it('does not match a different service', () => {
-    expect(audienceMatches(policy, 'https://sar.regione.veneto.it/Repository')).toBe(false);
+    expect(audienceMatches(policy(), 'https://sar.regione.veneto.it/Repository')).toBe(false);
   });
 });
 
 describe('audienceMatches — normalised, behind the explicit flag', () => {
-  const policy = servicePolicy({ audience: AUDIENCE, audienceMatching: 'normalised' });
+  const policy = () => servicePolicy({ audience: AUDIENCE, audienceMatching: 'normalised' });
 
   it.each([
     ['a host differing in case', 'https://FSER.Regione.Veneto.IT/Registry'],
     ['a scheme differing in case', 'HTTPS://fser.regione.veneto.it/Registry'],
     ["the scheme's default port written out", 'https://fser.regione.veneto.it:443/Registry'],
   ])('matches %s', (_case, candidate) => {
-    expect(audienceMatches(policy, candidate)).toBe(true);
+    expect(audienceMatches(policy(), candidate)).toBe(true);
   });
 
   it('treats an absent path and a bare slash as the same service', () => {
@@ -140,15 +143,15 @@ describe('audienceMatches — normalised, behind the explicit flag', () => {
   });
 
   it('keeps the path case-sensitive, because RFC 3986 does', () => {
-    expect(audienceMatches(policy, 'https://fser.regione.veneto.it/registry')).toBe(false);
+    expect(audienceMatches(policy(), 'https://fser.regione.veneto.it/registry')).toBe(false);
   });
 
   it('keeps a trailing slash on a non-empty path significant', () => {
-    expect(audienceMatches(policy, `${AUDIENCE}/`)).toBe(false);
+    expect(audienceMatches(policy(), `${AUDIENCE}/`)).toBe(false);
   });
 
   it('still refuses a different service', () => {
-    expect(audienceMatches(policy, 'https://sar.regione.veneto.it/Registry')).toBe(false);
+    expect(audienceMatches(policy(), 'https://sar.regione.veneto.it/Registry')).toBe(false);
   });
 
   it('falls back to comparing the trimmed values when one side is not a URL', () => {
@@ -156,6 +159,62 @@ describe('audienceMatches — normalised, behind the explicit flag', () => {
     // so this is the assertion carrying something that is not one. Comparing
     // the raw values keeps the answer false rather than throwing on a document
     // the caller cannot control.
-    expect(audienceMatches(policy, 'not a url')).toBe(false);
+    expect(audienceMatches(policy(), 'not a url')).toBe(false);
+  });
+});
+
+describe('servicePolicy — the attributes it will require', () => {
+  it('refuses a blank attribute name, which asks for an attribute that has no name', () => {
+    expect(() => servicePolicy({ audience: AUDIENCE, requiredAttributes: ['  '] })).toThrow(
+      ValidationInputError,
+    );
+  });
+
+  it('refuses a blank name among names that are fine', () => {
+    expect(() =>
+      servicePolicy({ audience: AUDIENCE, requiredAttributes: ['codiceFiscale', ''] }),
+    ).toThrow(/A required attribute name is blank/);
+  });
+
+  it('stores a name without the whitespace around it, so the assertion is asked by name', () => {
+    const policy = servicePolicy({
+      audience: AUDIENCE,
+      requiredAttributes: ['  codiceFiscale  '],
+    });
+
+    expect(policy.requiredAttributes).toEqual(['codiceFiscale']);
+  });
+});
+
+describe('servicePolicy — what a refusal says', () => {
+  // The policy is built where the tenant configuration is read, typically at
+  // startup and far from the call that fails. A message naming the value is
+  // what makes that a five-minute fix rather than a bisect.
+  it('names the matching mode it was asked for', () => {
+    expect(() =>
+      servicePolicy({ audience: AUDIENCE, audienceMatching: 'loose' as never }),
+      // Naming the modes, not only the one that was wrong: a caller reading
+      // this is choosing a replacement value, and the list is the answer.
+    ).toThrow(/"loose" is not an audience matching mode\. The modes are "exact" and "normalised"\./);
+  });
+
+  it('names the authentication level it was asked for', () => {
+    expect(() =>
+      servicePolicy({ audience: AUDIENCE, requiredAuthenticationLevel: 'urn:rve:authnL3' as never }),
+    ).toThrow(/"urn:rve:authnL3" is not an authentication level/);
+  });
+
+  it('says the audience is blank rather than that it is not a URI', () => {
+    expect(() => servicePolicy({ audience: '   ' })).toThrow(/The service audience is blank/);
+  });
+
+  it('throws an error a caller can catch by name', () => {
+    try {
+      servicePolicy({ audience: '' });
+      expect.unreachable('the constructor should have refused a blank audience');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationInputError);
+      expect((error as Error).name).toBe('ValidationInputError');
+    }
   });
 });

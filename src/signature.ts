@@ -259,22 +259,19 @@ function algorithmStanding(
  * cannot be examined inside a `ds:SignedInfo` that is not there.
  */
 export function signatureIntegrity(assertion: Element, assertionId: string): SignatureOutcome {
-  const signatures = childElements(assertion, XML_SIGNATURE_NAMESPACE, SIGNATURE_ELEMENT);
-  if (signatures.length === 0) {
+  const [signature, ...furtherSignatures] = childElements(
+    assertion,
+    XML_SIGNATURE_NAMESPACE,
+    SIGNATURE_ELEMENT,
+  );
+  if (signature === undefined) {
     return absent('the assertion carries no ds:Signature element, which §4.1.6.2.2 makes mandatory.');
   }
-  if (signatures.length > 1) {
+  if (furtherSignatures.length > 0) {
     // Not "absent", and not a choice this library makes on the document's
     // behalf either: two signatures means two answers to which one binds the
     // assertion, and picking the first would let a document that wants to be
     // read two ways decide which reading it gets.
-    return malformed('the assertion carries more than one ds:Signature element.');
-  }
-
-  const [signature] = signatures;
-  if (signature === undefined) {
-    // Unreachable: the length is exactly one. Written as a return rather than a
-    // cast so the compiler's narrowing and the runtime's behaviour agree.
     return malformed('the assertion carries more than one ds:Signature element.');
   }
 

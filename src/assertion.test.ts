@@ -136,8 +136,15 @@ const STATEMENT = statementXml(
 /** The service every test validates against unless it says otherwise. */
 const SERVICE = 'https://fser.regione.veneto.it/Registry';
 
-/** A policy on the baseline: exact matching, generic assertions accepted. */
-const POLICY = servicePolicy({ audience: SERVICE });
+/**
+ * A policy on the baseline: exact matching, generic assertions accepted.
+ *
+ * Built inside the test that asks for it rather than once at module scope. A
+ * fixture built while the file is being collected takes any throw out of
+ * `servicePolicy` with it: the file reports no results at all, which a runner
+ * that counts test outcomes reads as a suite with nothing wrong in it.
+ */
+const POLICY = () => servicePolicy({ audience: SERVICE });
 
 /**
  * A moment comfortably inside the fixture's window, so that a structural test
@@ -194,15 +201,26 @@ function bytes(xml: string): Uint8Array {
   return new TextEncoder().encode(xml);
 }
 
-/** The failures an assertion was refused for, or a failing assertion. */
+/**
+ * The failures an assertion was refused for, or a failing assertion.
+ *
+ * Every refusal that passes through here is held to the invariant the failure
+ * type promises and no single test would think to restate: a refusal a support
+ * engineer can act on says something, in a sentence, about what was wrong. A
+ * detail left empty is the failure code repeated back at a reader who already
+ * had it.
+ */
 function failures(
   input: Uint8Array,
   time: AssertionTimeModel = TIME,
-  policy: ServicePolicy = POLICY,
+  policy: ServicePolicy = POLICY(),
 ) {
   const result = validateAssertion(input, time, policy);
   if (result.valid) {
     throw new Error('expected the assertion to be refused');
+  }
+  for (const failure of result.failures) {
+    expect(failure.detail.trim().length, `${failure.code} carries no detail`).toBeGreaterThan(0);
   }
   return result.failures;
 }
@@ -211,7 +229,7 @@ function failures(
 function onlyFailure(
   input: Uint8Array,
   time: AssertionTimeModel = TIME,
-  policy: ServicePolicy = POLICY,
+  policy: ServicePolicy = POLICY(),
 ) {
   const refusals = failures(input, time, policy);
   expect(refusals).toHaveLength(1);
@@ -222,7 +240,7 @@ function onlyFailure(
 function accepted(
   input: Uint8Array,
   time: AssertionTimeModel = TIME,
-  policy: ServicePolicy = POLICY,
+  policy: ServicePolicy = POLICY(),
 ) {
   const result = validateAssertion(input, time, policy);
   if (!result.valid) {
@@ -232,13 +250,16 @@ function accepted(
         .join(', ')}`,
     );
   }
+  for (const warning of result.warnings) {
+    expect(warning.detail.trim().length, `${warning.code} carries no detail`).toBeGreaterThan(0);
+  }
   return result;
 }
 
 /** The warning codes an accepted assertion carries, or a failing assertion. */
 function warningCodes(input: Uint8Array, verifySignature?: SignatureVerifier): readonly string[] {
   const options = verifySignature === undefined ? {} : { verifySignature };
-  const result = validateAssertion(input, TIME, POLICY, options);
+  const result = validateAssertion(input, TIME, POLICY(), options);
   if (!result.valid) {
     throw new Error(`expected the assertion to be accepted: ${result.failures[0].detail}`);
   }
@@ -247,7 +268,7 @@ function warningCodes(input: Uint8Array, verifySignature?: SignatureVerifier): r
 
 describe('validateAssertion — the structural phase', () => {
   it('accepts a structurally complete assertion', () => {
-    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY()).valid).toBe(true);
   });
 
   it('reports exactly one failure for bytes that are not XML at all', () => {
@@ -385,7 +406,7 @@ describe('validateAssertion — one assertion to a document', () => {
 
 describe('validateAssertion — structural signature integrity', () => {
   it('accepts a signature whose single reference names the assertion itself', () => {
-    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY()).valid).toBe(true);
   });
 
   it('reports an absent signature and a malformed one as distinct failures', () => {
@@ -467,7 +488,7 @@ describe('validateAssertion — structural signature integrity', () => {
       canonicalization: '<ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>',
     });
 
-    expect(validateAssertion(bytes(assertionXml({ signature })), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml({ signature })), TIME, POLICY()).valid).toBe(true);
   });
 });
 
@@ -551,7 +572,7 @@ describe('validateAssertion — deprecated algorithms', () => {
       reference: referenceXml({ digestMethod: `<ds:DigestMethod Algorithm="${SHA1}"/>` }),
     });
 
-    expect(validateAssertion(bytes(assertionXml({ signature })), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml({ signature })), TIME, POLICY()).valid).toBe(true);
   });
 });
 
@@ -575,7 +596,7 @@ describe('validateAssertion — the cryptographic verification seam', () => {
   });
 
   it('refuses the assertion when a supplied verifier rejects the signature', () => {
-    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY, {
+    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY(), {
       verifySignature: () => 'not-verified',
     });
 
@@ -594,7 +615,7 @@ describe('validateAssertion — the cryptographic verification seam', () => {
     const input = bytes(assertionXml());
     const verifier = vi.fn<SignatureVerifier>(() => 'verified');
 
-    validateAssertion(input, TIME, POLICY, { verifySignature: verifier });
+    validateAssertion(input, TIME, POLICY(), { verifySignature: verifier });
 
     expect(verifier).toHaveBeenCalledTimes(1);
     expect(verifier.mock.calls[0]?.[0]).toBe(input);
@@ -607,11 +628,11 @@ describe('validateAssertion — the cryptographic verification seam', () => {
     const verifier = vi.fn<SignatureVerifier>(() => 'verified');
     const notBound = signatureXml({ reference: referenceXml({ uri: '#other' }) });
 
-    validateAssertion(bytes('not a document'), TIME, POLICY, { verifySignature: verifier });
-    validateAssertion(bytes(assertionXml({ signature: '' })), TIME, POLICY, {
+    validateAssertion(bytes('not a document'), TIME, POLICY(), { verifySignature: verifier });
+    validateAssertion(bytes(assertionXml({ signature: '' })), TIME, POLICY(), {
       verifySignature: verifier,
     });
-    validateAssertion(bytes(assertionXml({ signature: notBound })), TIME, POLICY, {
+    validateAssertion(bytes(assertionXml({ signature: notBound })), TIME, POLICY(), {
       verifySignature: verifier,
     });
 
@@ -655,7 +676,7 @@ describe('validateAssertion — the byte contract', () => {
     const input = bytes(assertionXml());
     const before = Uint8Array.from(input);
 
-    validateAssertion(input, TIME, POLICY);
+    validateAssertion(input, TIME, POLICY());
 
     expect(input).toEqual(before);
   });
@@ -694,7 +715,7 @@ describe('validateAssertion — the shape of a validity window', () => {
 
   it('accepts fractional seconds', () => {
     // The library writes whole seconds (D-004); it does not require the IAP to.
-    const result = validateAssertion(withWindow('2026-08-21T09:00:00.500Z', NOT_ON_OR_AFTER), TIME, POLICY);
+    const result = validateAssertion(withWindow('2026-08-21T09:00:00.500Z', NOT_ON_OR_AFTER), TIME, POLICY());
 
     expect(result.valid).toBe(true);
   });
@@ -705,7 +726,7 @@ describe('validateAssertion — the shape of a validity window', () => {
     const result = validateAssertion(withWindow('2026-08-21T11:00:00+02:00', NOT_ON_OR_AFTER), {
       ...EXACT,
       now: new Date('2026-08-21T09:00:00Z'),
-    }, POLICY);
+    }, POLICY());
 
     expect(result.valid).toBe(true);
   });
@@ -713,7 +734,7 @@ describe('validateAssertion — the shape of a validity window', () => {
 
 describe('validateAssertion — the validity window', () => {
   it('accepts an assertion the clock is inside the window of', () => {
-    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY()).valid).toBe(true);
   });
 
   it('reports the assertion as not yet valid before its window opens', () => {
@@ -733,10 +754,10 @@ describe('validateAssertion — the validity window', () => {
   it('treats NotBefore as inclusive and NotOnOrAfter as exclusive, with no margins', () => {
     const document = bytes(assertionXml());
 
-    expect(validateAssertion(document, at(EXACT, NOT_BEFORE), POLICY).valid).toBe(true);
-    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_BEFORE) - 1), POLICY).valid).toBe(false);
-    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_ON_OR_AFTER) - 1), POLICY).valid).toBe(true);
-    expect(validateAssertion(document, at(EXACT, NOT_ON_OR_AFTER), POLICY).valid).toBe(false);
+    expect(validateAssertion(document, at(EXACT, NOT_BEFORE), POLICY()).valid).toBe(true);
+    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_BEFORE) - 1), POLICY()).valid).toBe(false);
+    expect(validateAssertion(document, at(EXACT, Date.parse(NOT_ON_OR_AFTER) - 1), POLICY()).valid).toBe(true);
+    expect(validateAssertion(document, at(EXACT, NOT_ON_OR_AFTER), POLICY()).valid).toBe(false);
   });
 
   it('lets clock skew loosen the not-before bound', () => {
@@ -748,8 +769,8 @@ describe('validateAssertion — the validity window', () => {
       Date.parse(NOT_BEFORE) - RECOMMENDED_CLOCK_SKEW_MS,
     );
 
-    expect(validateAssertion(document, skewed, POLICY).valid).toBe(true);
-    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }, POLICY).valid).toBe(false);
+    expect(validateAssertion(document, skewed, POLICY()).valid).toBe(true);
+    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }, POLICY()).valid).toBe(false);
   });
 
   it('moves the not-on-or-after bound earlier by the skew alone, with no flight time', () => {
@@ -762,8 +783,8 @@ describe('validateAssertion — the validity window', () => {
       Date.parse(NOT_ON_OR_AFTER) - RECOMMENDED_CLOCK_SKEW_MS,
     );
 
-    expect(validateAssertion(document, skewed, POLICY).valid).toBe(false);
-    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }, POLICY).valid).toBe(true);
+    expect(validateAssertion(document, skewed, POLICY()).valid).toBe(false);
+    expect(validateAssertion(document, { ...skewed, clockSkewMs: 0 }, POLICY()).valid).toBe(true);
   });
 
   it('lets clock skew and flight time together tighten the not-on-or-after bound', () => {
@@ -773,8 +794,8 @@ describe('validateAssertion — the validity window', () => {
     const margin = RECOMMENDED_CLOCK_SKEW_MS + RECOMMENDED_FLIGHT_TIME_MS;
     const late = at(TIME, Date.parse(NOT_ON_OR_AFTER) - margin);
 
-    expect(validateAssertion(document, late, POLICY).valid).toBe(false);
-    expect(validateAssertion(document, { ...late, clockSkewMs: 0, flightTimeMs: 0 }, POLICY).valid).toBe(
+    expect(validateAssertion(document, late, POLICY()).valid).toBe(false);
+    expect(validateAssertion(document, { ...late, clockSkewMs: 0, flightTimeMs: 0 }, POLICY()).valid).toBe(
       true,
     );
   });
@@ -782,7 +803,7 @@ describe('validateAssertion — the validity window', () => {
   it('returns a usable-until deadline that is the tightened bound itself', () => {
     // What a cache evicts on: the last instant at which spending the assertion
     // is still expected to arrive in time.
-    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY);
+    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY());
 
     if (!result.valid) {
       throw new Error('expected the assertion to be accepted');
@@ -802,7 +823,7 @@ describe('validateAssertion — the validity window', () => {
       ...EXACT,
       now: new Date('2026-08-21T10:00:29Z'),
       flightTimeMs: RECOMMENDED_FLIGHT_TIME_MS,
-    }, POLICY);
+    }, POLICY());
 
     if (result.valid) {
       throw new Error('expected the assertion to be refused');
@@ -824,7 +845,7 @@ describe('validateAssertion — the validity window', () => {
     const conditions =
       '<saml:Conditions NotBefore="2026-08-21T09:00:00Z" NotOnOrAfter="2027-08-21T09:00:00Z"/>';
 
-    expect(validateAssertion(bytes(assertionXml({ conditions })), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml({ conditions })), TIME, POLICY()).valid).toBe(true);
   });
 });
 
@@ -841,13 +862,13 @@ describe('validateAssertion — the time model', () => {
     // The caller's own arguments, not the third party's document: a bad one is
     // a programming error, and the alternative is silent — every comparison
     // against NaN is false, so the assertion would be accepted unconditionally.
-    expect(() => validateAssertion(document, { ...TIME, ...overrides }, POLICY)).toThrow(
+    expect(() => validateAssertion(document, { ...TIME, ...overrides }, POLICY())).toThrow(
       ValidationInputError,
     );
   });
 
   it('accepts a caller that declines both margins', () => {
-    expect(validateAssertion(document, EXACT, POLICY).valid).toBe(true);
+    expect(validateAssertion(document, EXACT, POLICY()).valid).toBe(true);
   });
 
   it('names recommended margins without applying them', () => {
@@ -876,7 +897,7 @@ function restriction(...audiences: readonly string[]): string {
 }
 
 /** Whether the assertion carrying `conditions` validates against `policy`. */
-function accepts(conditions: string, policy: ServicePolicy = POLICY): boolean {
+function accepts(conditions: string, policy: ServicePolicy = POLICY()): boolean {
   return validateAssertion(bytes(assertionXml({ conditions })), TIME, policy).valid;
 }
 
@@ -953,7 +974,7 @@ describe('validateAssertion — the audience', () => {
 });
 
 describe('validateAssertion — a generic assertion', () => {
-  const CONFIDENTIAL = servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
+  const CONFIDENTIAL = () => servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
 
   it('accepts one, on the baseline policy', () => {
     // The baseline is an inference from §4.1.8, Table 3, which marks the
@@ -962,7 +983,7 @@ describe('validateAssertion — a generic assertion', () => {
   });
 
   it('accepts one whose Conditions has no children at all', () => {
-    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY).valid).toBe(true);
+    expect(validateAssertion(bytes(assertionXml()), TIME, POLICY()).valid).toBe(true);
   });
 
   it('refuses one when the caller says the service refuses them', () => {
@@ -971,7 +992,7 @@ describe('validateAssertion — a generic assertion', () => {
     const failure = onlyFailure(
       bytes(assertionXml({ conditions: conditionsWith('') })),
       TIME,
-      CONFIDENTIAL,
+      CONFIDENTIAL(),
     );
 
     expect(failure.code).toBe('audience-absent');
@@ -986,7 +1007,7 @@ describe('validateAssertion — a generic assertion', () => {
     const scopedElsewhere = onlyFailure(
       bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
       TIME,
-      CONFIDENTIAL,
+      CONFIDENTIAL(),
     );
 
     expect(scopedElsewhere.code).toBe('audience-mismatch');
@@ -996,7 +1017,7 @@ describe('validateAssertion — a generic assertion', () => {
     // The structural short-circuit: a document with no Conditions has no
     // audience to be missing, and reporting one would be reporting the same
     // failure twice.
-    const failure = onlyFailure(bytes(assertionXml({ conditions: '' })), TIME, CONFIDENTIAL);
+    const failure = onlyFailure(bytes(assertionXml({ conditions: '' })), TIME, CONFIDENTIAL());
 
     expect(failure.code).toBe('malformed');
   });
@@ -1011,7 +1032,7 @@ describe('validateAssertion — the semantic phase reports every reason', () => 
     const result = validateAssertion(
       bytes(assertionXml({ conditions })),
       at(EXACT, NOT_ON_OR_AFTER),
-      POLICY,
+      POLICY(),
     );
 
     if (result.valid) {
@@ -1025,12 +1046,12 @@ describe('validateAssertion — the semantic phase reports every reason', () => 
 });
 
 describe('validateAssertion — the remedy', () => {
-  const CONFIDENTIAL = servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
-  const ASKING_FOR_A_ROLE = servicePolicy({
+  const CONFIDENTIAL = () => servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
+  const ASKING_FOR_A_ROLE = () => servicePolicy({
     audience: SERVICE,
     requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE],
   });
-  const REQUIRES_TWO_FACTOR = servicePolicy({
+  const REQUIRES_TWO_FACTOR = () => servicePolicy({
     audience: SERVICE,
     requiredAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
   });
@@ -1039,7 +1060,7 @@ describe('validateAssertion — the remedy', () => {
   function refusal(
     input: Uint8Array,
     time: AssertionTimeModel = TIME,
-    policy: ServicePolicy = POLICY,
+    policy: ServicePolicy = POLICY(),
     options: AssertionValidationOptions = {},
   ) {
     const result = validateAssertion(input, time, policy, options);
@@ -1052,7 +1073,15 @@ describe('validateAssertion — the remedy', () => {
   interface Refused {
     readonly input: Uint8Array;
     readonly time?: AssertionTimeModel;
-    readonly policy?: ServicePolicy;
+    /** A thunk, so that a policy that will not build fails the row rather than the file. */
+    readonly policy?: () => ServicePolicy;
+
+    /**
+     * Whether the code claims nothing further can be tried. Beside the remedy
+     * because the two answer one question between them, and a row that said
+     * *fail-hard* while claiming a retry would help would be saying both.
+     */
+    readonly unrecoverable: boolean;
     readonly options?: AssertionValidationOptions;
     readonly remedy: Remedy['action'];
   }
@@ -1071,27 +1100,35 @@ describe('validateAssertion — the remedy', () => {
     // Nothing this library can name resolves these: a document that is not an
     // assertion, a signature that does not cover one, a clock that disagrees
     // with the issuer's, or an IAP that resolved two identities.
-    malformed: { input: bytes('not a document'), remedy: 'fail-hard' },
-    'signature-absent': { input: bytes(assertionXml({ signature: '' })), remedy: 'fail-hard' },
+    malformed: { input: bytes('not a document'), remedy: 'fail-hard', unrecoverable: false },
+    'signature-absent': {
+      input: bytes(assertionXml({ signature: '' })),
+      remedy: 'fail-hard',
+      unrecoverable: false,
+    },
     'signature-malformed': {
       input: bytes(assertionXml({ signature: signatureXml({ reference: referenceXml({ digestValue: '' }) }) })),
       remedy: 'fail-hard',
+      unrecoverable: false,
     },
     'signature-not-bound': {
       input: bytes(
         assertionXml({ signature: signatureXml({ reference: referenceXml({ uri: '#elsewhere' }) }) }),
       ),
       remedy: 'fail-hard',
+      unrecoverable: false,
     },
     'signature-verification-failed': {
       input: bytes(assertionXml()),
       options: { verifySignature: () => 'not-verified' },
       remedy: 'fail-hard',
+      unrecoverable: false,
     },
     'not-yet-valid': {
       input: bytes(assertionXml()),
       time: at(TIME, '2026-08-21T08:00:00Z'),
       remedy: 'fail-hard',
+      unrecoverable: false,
     },
     'identity-mismatch': {
       input: bytes(
@@ -1102,26 +1139,37 @@ describe('validateAssertion — the remedy', () => {
         }),
       ),
       remedy: 'fail-hard',
+      // The only one. Two identities in one assertion is the AULSS directory
+      // disagreeing with itself, and asking it again returns both again.
+      unrecoverable: true,
     },
 
     // A fresh assertion is a round trip that exists, and age is the only thing
     // asking the same question again can change.
-    expired: { input: bytes(assertionXml()), time: at(EXACT, NOT_ON_OR_AFTER), remedy: 'refresh' },
+    expired: {
+      input: bytes(assertionXml()),
+      time: at(EXACT, NOT_ON_OR_AFTER),
+      remedy: 'refresh',
+      unrecoverable: false,
+    },
 
     // §3.1.1's own recovery: ask again, naming this service.
     'audience-mismatch': {
       input: bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
       remedy: 'rerequest-scoped',
+      unrecoverable: false,
     },
     'audience-absent': {
       input: bytes(assertionXml({ conditions: conditionsWith('') })),
       policy: CONFIDENTIAL,
       remedy: 'rerequest-scoped',
+      unrecoverable: false,
     },
     'attribute-missing': {
       input: bytes(assertionXml()),
       policy: ASKING_FOR_A_ROLE,
       remedy: 'rerequest-scoped',
+      unrecoverable: false,
     },
 
     // Out of this layer, to the session that can acquire a second factor.
@@ -1129,16 +1177,21 @@ describe('validateAssertion — the remedy', () => {
       input: bytes(assertionXml()),
       policy: REQUIRES_TWO_FACTOR,
       remedy: 'step-up-auth',
+      unrecoverable: false,
     },
   };
 
   it.each(Object.entries(REFUSALS))('resolves %s with the remedy that answers it', (code, refused) => {
-    const result = refusal(refused.input, refused.time, refused.policy, refused.options);
+    const result = refusal(refused.input, refused.time, refused.policy?.(), refused.options);
 
     // The fixture is held to producing this one failure and no other, so that
     // the remedy beside it is the remedy for the code the row names.
     expect(result.failures.map((failure) => failure.code)).toEqual([code]);
     expect(result.remedy.action).toBe(refused.remedy);
+    // Fail-hard and unrecoverable are not the same claim, and the rows prove
+    // it: seven codes resolve to fail-hard because this library knows no remedy
+    // for them, and only one of the seven says a further attempt is pointless.
+    expect(result.failures[0].unrecoverable).toBe(refused.unrecoverable);
   });
 
   it('answers an expired and wrongly scoped assertion with a scoped re-request, not a refresh', () => {
@@ -1171,7 +1224,7 @@ describe('validateAssertion — the remedy', () => {
     const result = refusal(
       bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
       TIME,
-      REQUIRES_TWO_FACTOR,
+      REQUIRES_TWO_FACTOR(),
     );
 
     expect(result.failures.map((failure) => failure.code).sort()).toEqual([
@@ -1204,7 +1257,7 @@ describe('validateAssertion — the remedy', () => {
       if (refused.remedy === 'fail-hard') {
         continue;
       }
-      const { remedy } = refusal(refused.input, refused.time, refused.policy, refused.options);
+      const { remedy } = refusal(refused.input, refused.time, refused.policy?.(), refused.options);
 
       expect(remedy).toHaveProperty('withAudience', SERVICE);
     }
@@ -1215,7 +1268,7 @@ describe('validateAssertion — the remedy', () => {
       refusal(
         bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
         TIME,
-        REQUIRES_TWO_FACTOR,
+        REQUIRES_TWO_FACTOR(),
       ).remedy,
     ).toHaveProperty('withAuthenticationLevel', TWO_FACTOR_AUTHENTICATION_LEVEL);
 
@@ -1352,7 +1405,7 @@ describe('validateAssertion — required attributes', () => {
 });
 
 describe('validateAssertion — the authentication level', () => {
-  const REQUIRES_TWO_FACTOR = servicePolicy({
+  const REQUIRES_TWO_FACTOR = () => servicePolicy({
     audience: SERVICE,
     requiredAuthenticationLevel: TWO_FACTOR_AUTHENTICATION_LEVEL,
   });
@@ -1384,7 +1437,7 @@ describe('validateAssertion — the authentication level', () => {
 
   it('accepts an assertion attesting the level the policy requires', () => {
     expect(
-      accepted(withLevel(TWO_FACTOR_AUTHENTICATION_LEVEL), TIME, REQUIRES_TWO_FACTOR).valid,
+      accepted(withLevel(TWO_FACTOR_AUTHENTICATION_LEVEL), TIME, REQUIRES_TWO_FACTOR()).valid,
     ).toBe(true);
   });
 
@@ -1396,7 +1449,7 @@ describe('validateAssertion — the authentication level', () => {
     // Its own code, because its remedy is unlike any other: the operator has to
     // authenticate again with a second factor, which is the session layer's
     // work and not a re-request this library's caller can make.
-    const failure = onlyFailure(bytes(assertionXml()), TIME, REQUIRES_TWO_FACTOR);
+    const failure = onlyFailure(bytes(assertionXml()), TIME, REQUIRES_TWO_FACTOR());
 
     expect(failure.code).toBe('authentication-level-not-attested');
     expect(failure.regionalErrorCode).toBe(
@@ -1406,7 +1459,7 @@ describe('validateAssertion — the authentication level', () => {
   });
 
   it('refuses an assertion attesting some level other than the one required', () => {
-    expect(onlyFailure(withLevel('urn:rve:authnL1'), TIME, REQUIRES_TWO_FACTOR).code).toBe(
+    expect(onlyFailure(withLevel('urn:rve:authnL1'), TIME, REQUIRES_TWO_FACTOR()).code).toBe(
       'authentication-level-not-attested',
     );
   });
@@ -1414,7 +1467,7 @@ describe('validateAssertion — the authentication level', () => {
   it('refuses an assertion attesting the required level twice over, differently', () => {
     // Two values under one name is two answers, and a check that took the first
     // would be a check a second value could be hidden behind.
-    expect(onlyFailure(TWO_LEVELS, TIME, REQUIRES_TWO_FACTOR).code).toBe(
+    expect(onlyFailure(TWO_LEVELS, TIME, REQUIRES_TWO_FACTOR()).code).toBe(
       'authentication-level-not-attested',
     );
   });
@@ -1426,6 +1479,9 @@ describe('validateAssertion — the authentication level', () => {
     const failure = onlyFailure(TWO_LEVELS);
 
     expect(failure.code).toBe('authentication-level-not-attested');
+    // A contradiction the operator can resolve by authenticating again, so it
+    // is not the unrecoverable kind — that is the identity mismatch alone.
+    expect(failure.unrecoverable).toBe(false);
     // Not ERR_00065: no service demanded a second factor here, and saying one
     // did would put a claim into the support conversation that nothing made.
     expect(failure.regionalErrorCode).toBe(
@@ -1594,5 +1650,346 @@ describe('validateAssertion — what the success branch reports', () => {
 
   it('reports the deadline beside them, so a caching layer needs one call', () => {
     expect(accepted(bytes(assertionXml())).usableUntil).toBeInstanceOf(Date);
+  });
+});
+
+describe('validateAssertion — a remedy that answers two failures at once', () => {
+  /** The refusal a validation produced, or a failing assertion. */
+  function refused(input: Uint8Array, policy: ServicePolicy, time: AssertionTimeModel = TIME) {
+    const result = validateAssertion(input, time, policy);
+    if (result.valid) {
+      throw new Error('expected the assertion to be refused');
+    }
+    return result;
+  }
+
+  const GENERIC = bytes(assertionXml());
+  const TWO_FACTOR = TWO_FACTOR_AUTHENTICATION_LEVEL;
+
+  // Each row pairs the level failure with one other, because the step-up is the
+  // remedy that has to resolve everything the scoped re-request does *and* the
+  // level. A step-up that resolved only the level would send a caller back for
+  // an assertion that is still expired, still wrongly scoped, or still missing
+  // the attribute — one round trip per failure, which is the loop the whole
+  // derivation exists to make impossible.
+  it.each<[string, Uint8Array, () => ServicePolicy, AssertionTimeModel]>([
+    [
+      'an expired assertion',
+      GENERIC,
+      () => servicePolicy({ audience: SERVICE, requiredAuthenticationLevel: TWO_FACTOR }),
+      at(EXACT, NOT_ON_OR_AFTER),
+    ],
+    [
+      'an assertion scoped elsewhere',
+      bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+      () => servicePolicy({ audience: SERVICE, requiredAuthenticationLevel: TWO_FACTOR }),
+      TIME,
+    ],
+    [
+      'an assertion scoped to nothing, against a service that refuses generic ones',
+      GENERIC,
+      () =>
+        servicePolicy({
+          audience: SERVICE,
+          refusesGenericAssertions: true,
+          requiredAuthenticationLevel: TWO_FACTOR,
+        }),
+      TIME,
+    ],
+    [
+      'an assertion missing an attribute the service asks for',
+      GENERIC,
+      () =>
+        servicePolicy({
+          audience: SERVICE,
+          requiredAttributes: [ASSERTION_ATTRIBUTES.ROLE],
+          requiredAuthenticationLevel: TWO_FACTOR,
+        }),
+      TIME,
+    ],
+  ])(
+    'answers %s that also attests no level with one step-up, not a step-up and a re-request',
+    (_case, input, policy, time) => {
+      const result = refused(input, policy(), time);
+
+      expect(result.failures).toHaveLength(2);
+      expect(result.failures.map((failure) => failure.code)).toContain(
+        'authentication-level-not-attested',
+      );
+      expect(result.remedy).toEqual({
+        action: 'step-up-auth',
+        withAudience: SERVICE,
+        withAuthenticationLevel: TWO_FACTOR,
+      });
+    },
+  );
+
+  it('names the level the specification attests when the service required none', () => {
+    // The fallback in the step-up: an assertion attesting two levels attests
+    // none whatever the policy asked for, so this failure arises against a
+    // service with no requirement of its own — and a step-up naming no level
+    // is one the session layer cannot execute. See D-026.
+    const twoLevels = bytes(
+      assertionXml({
+        statement: statementXml(
+          attributeXml(ASSERTION_ATTRIBUTES.RESPONSIBLE_PARTY, PLANTED_IDENTITY),
+          attributeXml(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL, TWO_FACTOR, 'urn:rve:authnL1'),
+        ),
+      }),
+    );
+
+    const result = refused(twoLevels, POLICY());
+
+    expect(result.remedy).toEqual({
+      action: 'step-up-auth',
+      withAudience: SERVICE,
+      withAuthenticationLevel: TWO_FACTOR,
+    });
+  });
+});
+
+describe('validateAssertion — what a refusal tells a support engineer', () => {
+  it('says which mandatory attribute is missing when one is blank rather than absent', () => {
+    // A blank ID is not an identifier a signature reference can be bound to, so
+    // it is absent — and the refusal has to say so, because a support engineer
+    // reading "carries no ID attribute" against a document that visibly has one
+    // is the only way to learn that blank counts as absent.
+    const blankId = bytes(
+      assertionXml({ attributes: 'Version="2.0" ID="   " IssueInstant="2026-08-21T09:00:00Z"' }),
+    );
+
+    expect(onlyFailure(blankId).detail).toMatch(/carries no ID attribute/);
+  });
+
+  it('distinguishes an assertion scoped to nobody from one scoped elsewhere, in words', () => {
+    const confidential = servicePolicy({ audience: SERVICE, refusesGenericAssertions: true });
+    const absent = onlyFailure(bytes(assertionXml()), TIME, confidential);
+    const mismatch = onlyFailure(
+      bytes(assertionXml({ conditions: conditionsWith(restriction(OTHER_SERVICE)) })),
+    );
+
+    expect(absent.detail).toMatch(/names no audience/);
+    expect(mismatch.detail).toMatch(/scoped to services that do not include/);
+  });
+
+  it('says which element there is not exactly one of', () => {
+    expect(onlyFailure(bytes(assertionXml({ subject: '' }))).detail).toMatch(
+      /exactly one Subject element/,
+    );
+    expect(onlyFailure(bytes(assertionXml({ conditions: '' }))).detail).toMatch(
+      /exactly one Conditions element/,
+    );
+  });
+});
+
+describe('validateAssertion — the text an element carries', () => {
+  function withNameId(nameId: string): Uint8Array {
+    return bytes(assertionXml({ subject: `<saml:Subject>${nameId}</saml:Subject>` }));
+  }
+
+  it('reads a CDATA section as the text it stands for', () => {
+    const cdata = withNameId(`<saml:NameID><![CDATA[${PLANTED_IDENTITY}]]></saml:NameID>`);
+
+    expect(accepted(cdata).operatorTaxCode).toBe(PLANTED_IDENTITY);
+  });
+
+  it('reads text a comment interrupts as the text alone', () => {
+    // The comment is not content. Collecting it would put characters into the
+    // operator's tax code that the region never signed into it, and the
+    // identity cross-check would then refuse a document nothing is wrong with.
+    const interrupted = withNameId(
+      `<saml:NameID>${PLANTED_IDENTITY.slice(0, 6)}<!-- a comment -->${PLANTED_IDENTITY.slice(6)}</saml:NameID>`,
+    );
+
+    expect(accepted(interrupted).operatorTaxCode).toBe(PLANTED_IDENTITY);
+  });
+
+  it('refuses an element whose content is an element beside text', () => {
+    // `<x>http://</x>evil` concatenated is a URL; read as this library reads
+    // it, an element carrying an element carries no text at all.
+    const wrapped = withNameId(
+      `<saml:NameID><x>${PLANTED_IDENTITY.slice(0, 6)}</x>${PLANTED_IDENTITY.slice(6)}</saml:NameID>`,
+    );
+
+    expect(onlyFailure(wrapped).code).toBe('malformed');
+  });
+
+  it('reports only the audiences that are text, never an element that is not', () => {
+    const audiences = bytes(
+      assertionXml({
+        conditions: conditionsWith(
+          `<saml:AudienceRestriction><saml:Audience><x>${OTHER_SERVICE}</x></saml:Audience><saml:Audience>${SERVICE}</saml:Audience></saml:AudienceRestriction>`,
+        ),
+      }),
+    );
+
+    expect(accepted(audiences).audiences).toEqual([SERVICE]);
+  });
+});
+
+describe('validateAssertion — the lexical form of a validity window', () => {
+  it('refuses a NotBefore carrying anything before the timestamp', () => {
+    expect(
+      onlyFailure(
+        bytes(
+          assertionXml({
+            conditions: `<saml:Conditions NotBefore="on ${NOT_BEFORE}" NotOnOrAfter="${NOT_ON_OR_AFTER}"/>`,
+          }),
+        ),
+      ).code,
+    ).toBe('malformed');
+  });
+
+  it('refuses a NotOnOrAfter carrying anything after the timestamp', () => {
+    expect(
+      onlyFailure(
+        bytes(
+          assertionXml({
+            conditions: `<saml:Conditions NotBefore="${NOT_BEFORE}" NotOnOrAfter="${NOT_ON_OR_AFTER} at the latest"/>`,
+          }),
+        ),
+      ).code,
+    ).toBe('malformed');
+  });
+});
+
+describe('validateAssertion — a document a lenient parser would repair', () => {
+  // D-010. xmldom recovers from an error-level problem by default and carries
+  // on; this library refuses instead, because a recovered document is one whose
+  // element tree no longer corresponds to the bytes the region signed, and
+  // every check after it would run against the parser's opinion of the
+  // assertion rather than against the assertion.
+  it('refuses a document carrying an entity reference nothing defines', () => {
+    const undefinedEntity = bytes(
+      assertionXml({ issuer: '<saml:Issuer>https://iap.ulssx.veneto.it/&nope;</saml:Issuer>' }),
+    );
+
+    expect(onlyFailure(undefinedEntity).code).toBe('malformed');
+  });
+
+  it('refuses a document carrying content after its root element', () => {
+    expect(onlyFailure(bytes(`${assertionXml()}<trailing/>`)).code).toBe('malformed');
+  });
+});
+
+describe('validateAssertion — the signature, in words a support engineer can act on', () => {
+  it('names the element whose Algorithm attribute is missing', () => {
+    // "carries no Algorithm attribute" and "names an algorithm the section does
+    // not attest" send a reader to different places: one is a malformed
+    // document, the other is an IAP signing with something unblessed.
+    const noSignatureAlgorithm = signatureXml({
+      signatureMethod: '<ds:SignatureMethod/>',
+    });
+    const noDigestAlgorithm = signatureXml({
+      reference: referenceXml({ digestMethod: '<ds:DigestMethod/>' }),
+    });
+
+    expect(onlyFailure(bytes(assertionXml({ signature: noSignatureAlgorithm }))).detail).toMatch(
+      /ds:SignatureMethod carries no Algorithm attribute/,
+    );
+    expect(onlyFailure(bytes(assertionXml({ signature: noDigestAlgorithm }))).detail).toMatch(
+      /ds:DigestMethod carries no Algorithm attribute/,
+    );
+  });
+
+  it('says an unattested algorithm is unattested, and which element named it', () => {
+    const unattested = signatureXml({
+      signatureMethod: '<ds:SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#dsa-sha1"/>',
+    });
+
+    expect(onlyFailure(bytes(assertionXml({ signature: unattested }))).detail).toMatch(
+      /ds:SignatureMethod names an algorithm §4\.1\.6\.2\.2 does not attest/,
+    );
+  });
+
+  it('says a deprecated algorithm was accepted, and which one', () => {
+    const deprecated = signatureXml({
+      signatureMethod: '<ds:SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/>',
+      reference: referenceXml({
+        digestMethod: '<ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>',
+      }),
+    });
+    const result = accepted(bytes(assertionXml({ signature: deprecated })));
+    const details = result.warnings.map((warning) => warning.detail).join(' ');
+
+    expect(details).toMatch(/signed with the SHA-1 signature algorithm/);
+    expect(details).toMatch(/digests the assertion with SHA-1/);
+  });
+
+  it('says the caller’s own verifier is what rejected the signature', () => {
+    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY(), {
+      verifySignature: () => 'not-verified',
+    });
+
+    if (result.valid) {
+      throw new Error('expected the assertion to be refused');
+    }
+    expect(result.failures[0].detail).toMatch(/verifier rejected/);
+  });
+
+  it('carries no warning at all when the algorithms are current and a verifier verified', () => {
+    // Exactly none, not merely none of the two deprecation warnings: a warning
+    // a caller did not earn is one they learn to scroll past.
+    const result = validateAssertion(bytes(assertionXml()), TIME, POLICY(), {
+      verifySignature: () => 'verified',
+    });
+
+    if (!result.valid) {
+      throw new Error('expected the assertion to be accepted');
+    }
+    expect(result.warnings).toEqual([]);
+  });
+});
+
+describe('validateAssertion — the arguments the caller supplies', () => {
+  // Thrown rather than returned, so the message is the whole diagnosis: there
+  // is no failure object beside it carrying a code.
+  it('says the clock is not a clock', () => {
+    expect(() => validateAssertion(bytes(assertionXml()), at(TIME, NaN), POLICY())).toThrow(
+      /the current time is not a valid instant/,
+    );
+  });
+
+  it('names the margin that is not a number of milliseconds', () => {
+    expect(() =>
+      validateAssertion(bytes(assertionXml()), { ...TIME, clockSkewMs: -1 }, POLICY()),
+    ).toThrow(/clockSkewMs must be a finite, non-negative number of milliseconds/);
+    expect(() =>
+      validateAssertion(bytes(assertionXml()), { ...TIME, flightTimeMs: Number.NaN }, POLICY()),
+    ).toThrow(/flightTimeMs must be a finite, non-negative number of milliseconds/);
+  });
+});
+
+describe('validateAssertion — a timestamp is the whole attribute, not part of it', () => {
+  function withConditions(notBefore: string, notOnOrAfter: string): Uint8Array {
+    return bytes(
+      assertionXml({
+        conditions: `<saml:Conditions NotBefore="${notBefore}" NotOnOrAfter="${notOnOrAfter}"/>`,
+      }),
+    );
+  }
+
+  // The pattern is anchored at both ends, and these are the inputs that prove
+  // it: each carries a timestamp a search would find inside it, and each parses
+  // once the surrounding characters are ignored. An unanchored check would
+  // accept them and validate the window they only look like.
+  it('refuses a NotBefore padded with whitespace', () => {
+    expect(onlyFailure(withConditions(` ${NOT_BEFORE}`, NOT_ON_OR_AFTER)).detail).toMatch(
+      /NotBefore that is not a UTC dateTime/,
+    );
+  });
+
+  it('refuses a NotOnOrAfter padded with whitespace', () => {
+    expect(onlyFailure(withConditions(NOT_BEFORE, `${NOT_ON_OR_AFTER} `)).detail).toMatch(
+      /NotOnOrAfter that is not a UTC dateTime/,
+    );
+  });
+
+  it('distinguishes an absent bound from one that is not a timestamp', () => {
+    const absent = bytes(
+      assertionXml({ conditions: `<saml:Conditions NotOnOrAfter="${NOT_ON_OR_AFTER}"/>` }),
+    );
+
+    expect(onlyFailure(absent).detail).toMatch(/carries no NotBefore attribute/);
   });
 });

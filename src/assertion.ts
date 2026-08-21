@@ -539,8 +539,16 @@ function firstAbsent(element: Element, names: readonly string[]): string | undef
   return names.find((name) => attribute(element, name) === undefined);
 }
 
-/** The attributes §4.1.6.2.2 makes mandatory on the assertion, beside Version. */
-const REQUIRED_ASSERTION_ATTRIBUTES = ['ID', 'IssueInstant'] as const;
+/**
+ * The attributes §4.1.6.2.2 makes mandatory on the assertion, beside Version
+ * and beside `ID`.
+ *
+ * `ID` is absent from this list and checked where it is read instead. Checking
+ * it twice — once for presence, once for the value the result carries — would
+ * make the second check unreachable, and an unreachable check is one nothing
+ * can hold to being right.
+ */
+const REQUIRED_ASSERTION_ATTRIBUTES = ['IssueInstant'] as const;
 
 /** The attributes §4.1.6.2.2 requires the Conditions element to carry. */
 const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
@@ -556,8 +564,12 @@ const REQUIRED_CONDITIONS_ATTRIBUTES = ['NotBefore', 'NotOnOrAfter'] as const;
  * Presence only. Whether the subject names the same operator as the
  * responsible-party attribute, and whether the issuer is one this caller
  * trusts, are semantic questions about a document that has to exist first.
+ *
+ * `Subject` and the conditions element are checked below rather than here, for
+ * the reason `ID` is: each is read straight afterwards, and one check that both
+ * refuses and produces the value is a check every input reaches.
  */
-const REQUIRED_ASSERTION_ELEMENTS = ['Issuer', 'Subject', CONDITIONS_ELEMENT] as const;
+const REQUIRED_ASSERTION_ELEMENTS = ['Issuer'] as const;
 
 /**
  * What the structural phase hands the semantic phase, or the one reason it has
@@ -691,6 +703,11 @@ function readStructure(assertion: Uint8Array): StructuralRead {
     return refused(`the assertion does not declare Version "${SAML_VERSION}".`);
   }
 
+  const id = attribute(element, 'ID');
+  if (id === undefined) {
+    return refused('the assertion carries no ID attribute.');
+  }
+
   const absentAttribute = firstAbsent(element, REQUIRED_ASSERTION_ATTRIBUTES);
   if (absentAttribute !== undefined) {
     return refused(`the assertion carries no ${absentAttribute} attribute.`);
@@ -705,15 +722,17 @@ function readStructure(assertion: Uint8Array): StructuralRead {
     }
   }
 
-  const conditions = onlySamlChild(element, CONDITIONS_ELEMENT);
+  // Exactly one of each in the same breath as reading it: `onlySamlChild` is
+  // undefined for none and for two alike, so the refusal and the value come
+  // from one question rather than from a count above and a lookup here.
   const subject = onlySamlChild(element, SUBJECT_ELEMENT);
-  if (conditions === undefined || subject === undefined) {
-    // Unreachable: the loop above established there is exactly one of each.
-    // Written as a return rather than an assertion so that the compiler's
-    // narrowing and the runtime's behaviour agree without a cast.
-    return refused(
-      `the assertion does not carry exactly one ${SUBJECT_ELEMENT} and ${CONDITIONS_ELEMENT} element.`,
-    );
+  if (subject === undefined) {
+    return refused(`the assertion does not carry exactly one ${SUBJECT_ELEMENT} element.`);
+  }
+
+  const conditions = onlySamlChild(element, CONDITIONS_ELEMENT);
+  if (conditions === undefined) {
+    return refused(`the assertion does not carry exactly one ${CONDITIONS_ELEMENT} element.`);
   }
 
   const absentConditionsAttribute = firstAbsent(conditions, REQUIRED_CONDITIONS_ATTRIBUTES);
@@ -749,14 +768,6 @@ function readStructure(assertion: Uint8Array): StructuralRead {
   // reports both bounds failing, which is the whole truth about it and needs
   // nothing invented. Refusing a window for its *length* is a different
   // question, and its answer belongs to the party holding the policy — D-013.
-  const id = attribute(element, 'ID');
-  if (id === undefined) {
-    // Unreachable: ID is one of the required attributes checked above. Written
-    // as a return rather than an assertion for the same reason the subject and
-    // conditions case above is.
-    return refused('the assertion carries no ID attribute.');
-  }
-
   return {
     read: true,
     window: { notBefore: notBefore.instant, notOnOrAfter: notOnOrAfter.instant },
@@ -999,7 +1010,6 @@ function checkAuthenticationLevel(
   readonly authenticationLevel: string | undefined;
 } {
   const levels = attributes.get(ASSERTION_ATTRIBUTES.AUTHENTICATION_LEVEL) ?? [];
-  const authenticationLevel = levels.length === 1 ? levels[0] : undefined;
 
   if (levels.length > 1) {
     // Two answers to a question with one answer, whatever the policy asked for
@@ -1007,7 +1017,7 @@ function checkAuthenticationLevel(
     // authenticated attests nothing, and there is no service that is safe for.
     // Argued in `docs/spec-questions.md` (D-023).
     return {
-      authenticationLevel,
+      authenticationLevel: undefined,
       failures: [
         {
           code: 'authentication-level-not-attested',
@@ -1018,6 +1028,10 @@ function checkAuthenticationLevel(
       ],
     };
   }
+
+  // Read only once the assertion is known not to contradict itself, so that the
+  // level reported is the level attested rather than the first of two.
+  const authenticationLevel = levels[0];
 
   if (
     policy.requiredAuthenticationLevel !== undefined &&

@@ -321,9 +321,16 @@ function wholeSecond(date: Date, what: string): Date {
   return new Date(Math.floor(milliseconds / 1000) * 1000);
 }
 
-/** Renders a whole-second instant as `YYYY-MM-DDThh:mm:ssZ` — see D-004. */
+/**
+ * Renders a whole-second instant as `YYYY-MM-DDThh:mm:ssZ` — see D-004.
+ *
+ * The seconds are taken by position rather than by stripping a `.000`
+ * suffix: `toISOString` is specified to produce exactly
+ * `YYYY-MM-DDTHH:mm:ss.sssZ` for the years this library deals in, so the first
+ * nineteen characters are the whole-second form and nothing has to be matched.
+ */
 function utcSecondsLexical(date: Date): string {
-  return date.toISOString().replace(/\.000Z$/, 'Z');
+  return `${date.toISOString().slice(0, 19)}Z`;
 }
 
 /**

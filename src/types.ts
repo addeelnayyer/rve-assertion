@@ -20,22 +20,32 @@ export class RequestInputError extends Error {
 }
 
 /**
- * Thrown when caller code hands the validator a service policy it cannot build.
+ * Thrown when caller code hands the assertion validator an argument of its own
+ * that it cannot check an assertion against: a time model, or a service policy.
  *
- * The same asymmetry {@link RequestInputError} draws, on the other side of the
- * library. An assertion is third-party data and its refusal is a result; a
- * service policy is the caller's own description of the regional service it is
- * about to call, assembled from tenant configuration, and a bad one is a
- * misconfiguration with no runtime remedy. It fails where the policy is built —
- * at startup, for most callers — rather than one assertion at a time.
+ * The same asymmetry {@link RequestInputError} describes, applied one level in.
+ * The assertion is third-party data and a bad one is returned as a refusal; the
+ * time model and the service policy beside it are the caller passing its own
+ * clock, its own margins and its own description of the service it is calling,
+ * where a bad value is a programming error. It is thrown rather than returned
+ * because the silent behaviour is the dangerous one: every comparison against
+ * `NaN` is false, so a clock that is not a time would accept every assertion,
+ * expired or not, and report no reason to doubt it.
  *
- * A separate class rather than a shared one because the two are raised by
- * opposite halves of the library and a caller catching one is not asking to
- * catch the other.
+ * A service policy is refused where it is built rather than one assertion at a
+ * time, which for most callers is at startup: `servicePolicy` is a smart
+ * constructor, and the validator is handed a value that cannot exist unchecked.
+ *
+ * Two classes rather than one, because a caller catching around a request build
+ * and a caller catching around a validation are handling different call sites,
+ * and a single shared class would let a `catch` placed around the request
+ * builder swallow a defect in the validator's arguments. Not three: a policy
+ * and a clock are both the validator's arguments, and the call site that gets
+ * them wrong is the same one.
  */
-export class ServicePolicyError extends Error {
+export class ValidationInputError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'ServicePolicyError';
+    this.name = 'ValidationInputError';
   }
 }

@@ -10,12 +10,12 @@ an ApplicationID allowlist. See [`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
 > **Status: in progress.** The scaffold, the MessageID-to-ID derivation, the
 > regional code vocabulary and the request builder are in place. The assertion
-> validator has its entry point, its structural phase and the audience check;
-> the rest of its semantic phase — validity window, required attributes,
-> identity cross-check, signature integrity — is not written yet. **Do not spend
-> an assertion on the strength of `validateAssertion` returning valid in this
-> build**: it does not yet establish that an assertion is in date or signed at
-> all. See [Validating an assertion](#validating-an-assertion).
+> validator has its structural phase, its validity-window check and its audience
+> check; the rest of its semantic phase — required attributes, identity
+> cross-check, signature integrity — is not written yet. **Do not spend an
+> assertion on the strength of `validateAssertion` returning valid in this
+> build**: it does not yet establish that the assertion was signed by anyone.
+> See [Validating an assertion](#validating-an-assertion).
 
 ## The regional code vocabulary
 
@@ -87,20 +87,35 @@ RVE-1.b is `Q-006`.
 
 ## Validating an assertion
 
-`validateAssertion` takes the raw bytes of a **bare `saml:Assertion` element**
-and the policy of the service about to be called, and returns a discriminated
-result.
+`validateAssertion` takes the raw bytes of a **bare `saml:Assertion` element**,
+the clock to judge it at, and the policy of the service about to be called, and
+returns a discriminated result.
 
 ```ts
-import { servicePolicy, validateAssertion } from 'rve-assertion';
+import {
+  RECOMMENDED_CLOCK_SKEW_MS,
+  RECOMMENDED_FLIGHT_TIME_MS,
+  servicePolicy,
+  validateAssertion,
+} from 'rve-assertion';
 
 const registry = servicePolicy({
   audience: 'https://fser.regione.veneto.it/Registry',
   refusesGenericAssertions: true,
 });
 
-const result = validateAssertion(assertionBytes, registry);
-if (!result.valid) {
+const result = validateAssertion(
+  assertionBytes,
+  {
+    now: new Date(),
+    clockSkewMs: RECOMMENDED_CLOCK_SKEW_MS,
+    flightTimeMs: RECOMMENDED_FLIGHT_TIME_MS,
+  },
+  registry,
+);
+if (result.valid) {
+  cache.set(assertionBytes, { evictAt: result.usableUntil });
+} else {
   for (const failure of result.failures) {
     log.warn(failure.code, failure.detail, failure.regionalErrorCode);
   }
@@ -141,10 +156,72 @@ both directions — it does not accumulate structural failures, and it does not
 let the semantic phase run. Unparseable bytes have no audience to compare and no
 signature to bind, so a list of later failures would report things missing only
 because the document is. The semantic phase is the one that runs to completion
-and reports every reason. It checks the audience today; the rest arrives with
-the tickets that give it something to check.
+and reports every reason. It checks the validity window and the audience today;
+the rest arrives with the tickets that give it something to check.
 
-## The service policy
+### The validity window, and the time model around it
+
+The current instant is a **required argument with no default**, so the validator
+can be driven at a chosen moment by a test and by a caller with a better time
+source than this process's clock.
+
+The margin around it is two arguments rather than one, because it was always two
+quantities. **Clock skew** is how far this host's clock may be from the IAP's,
+and it moves *both* bounds earlier — the same thing as assuming this clock may
+be that far behind the issuer's, which is the direction in which being wrong is
+dangerous. **Estimated flight time** is how long a call carrying the assertion
+takes to reach the service that will check it; it is a real interval that
+elapses *after* this library answers, so it moves the far bound earlier again
+and the near bound not at all. So the near bound is `NotBefore` less the skew,
+and the far bound is `NotOnOrAfter` less the skew and the flight time — one
+combined margin cannot produce both, and gets the near bound wrong in the
+direction that refuses assertions the IAP has only just issued.
+
+`RECOMMENDED_CLOCK_SKEW_MS` (one minute) and `RECOMMENDED_FLIGHT_TIME_MS` (five
+seconds) are exported and never applied silently — a caller taking them has
+written down that it did. **Replace the flight time.** It is a placeholder for
+your own measured high-percentile round trip to the regional services you call;
+nothing in the specification supports the number. Both figures and the reasoning
+are `D-014`.
+
+`NotBefore` is inclusive and `NotOnOrAfter` is exclusive, as their SAML names
+say. Expired and not yet
+valid are distinct failure codes carrying distinct regional codes — `ERR_00032`
+and `ERR_00031` — because their remedies differ: one is answered by a fresh
+assertion, the other by fixing a clock. A window too short to reach a service
+through reports both, which is what is true of it.
+
+On success the result carries `usableUntil`: `NotOnOrAfter` less the skew and
+the flight time, which is the deadline a cache layer evicts on. It is exclusive,
+like the bound it comes from — holding the assertion *at* that instant is
+holding it one instant too long — and it is deliberately earlier than the
+assertion's own expiry, because an assertion held until the instant the document
+expires is one that expires in flight.
+
+The window's **length** is not checked. §3.1.1's four-hour and fifteen-minute
+figures describe what the IAP does under regional policy, not a constraint on
+what a client may accept, and the region has its own code (`ERR_00033`) for a
+window it dislikes, decided by the party that holds the policy. Enforcing the
+figures here would refuse assertions the region considers valid the first time
+an AULSS configured a window between them. The argument is `D-013`.
+
+A bad time model **throws** `ValidationInputError` rather than returning a
+refusal. The assertion is third-party data whose rejection is a control-flow
+outcome; the clock and the margins are the caller's own arguments, and the
+silent alternative is the dangerous one — every comparison against `NaN` is
+false, so a clock that is not a time would accept every assertion put to it.
+
+Three refusals are stricter than the specification demands, each argued in
+`docs/spec-questions.md`: bytes are decoded as UTF-8 strictly rather than
+substituted through (`D-009`), a document a parser would have to recover from is
+refused rather than repaired (`D-010`), and a document type declaration is
+refused outright (`D-011`). A fourth concerns the window: a `NotBefore` or
+`NotOnOrAfter` carrying no time zone is refused rather than read in an assumed
+one, since two hosts in different zones would otherwise reach different verdicts
+about the same assertion (`D-012`). An explicit `+02:00` offset is accepted —
+it names the same instant a `Z` value would.
+
+### The service policy
 
 The policy is **caller-supplied**, and required — there is no validating an
 assertion without saying what it is about to be spent on. §3.1.1 is why: a
@@ -152,7 +229,7 @@ service holding highly confidential data may turn away any assertion whose
 request did not name it, and which services do that is decided by the
 organisation, not by the specification.
 
-`servicePolicy` is a smart constructor and throws `ServicePolicyError` on a
+`servicePolicy` is a smart constructor and throws `ValidationInputError` on a
 blank audience, on one that is not an absolute URL, and on a matching mode it
 does not implement. It stores the audience with the whitespace around it
 stripped, so `policy.audience` is a value a scoped re-request can carry. What
@@ -162,7 +239,7 @@ the caller does not say, `BASELINE_SERVICE_POLICY` fills in:
   has no information-content table of its own; the nearest is RVE-1.a's, which
   marks the audience optional in both directions, and §4.1.6.2.2 makes the
   element a `MAY`. Read across, a generic assertion is conforming. Nothing here
-  claims the specification states this for RVE-1.b — `D-012`, and `Q-001` for
+  claims the specification states this for RVE-1.b — `D-015`, and `Q-001` for
   why there is no RVE-1.b table to read.
 - `audienceMatching: 'exact'` — string comparison, after stripping the
   whitespace an XML formatter put around the value, which a URI could not have
@@ -171,12 +248,12 @@ the caller does not say, `BASELINE_SERVICE_POLICY` fills in:
   empty path written as `/`. Path case and a trailing slash stay significant.
   Exact is the default because the X-Service Provider runs its own comparison
   and a local *yes* against a remote *no* is worse than no local check —
-  `D-013`.
+  `D-016`.
 
 An assertion naming several services is valid if one of them is this one, and an
 assertion carrying two `AudienceRestriction` elements must satisfy both, which
 is SAML 2.0 core's reading of an element §4.1.6.2.2 describes only in the
-singular (`D-015`).
+singular (`D-018`).
 
 The two audience refusals are distinct codes. `audience-mismatch` says the
 assertion is scoped elsewhere; `audience-absent` says it is generic and this
@@ -190,13 +267,7 @@ holds, which this library cannot see and cannot be told about when they change.
 A stale client-side copy fails closed and is fixed by a redeploy. The audience
 is the exception because the caller is the party that asked for it — checking it
 is confirming its own request was honoured, not re-deciding an entitlement.
-`D-014` has the argument and the cost.
-
-Three refusals are stricter than the specification demands, each argued in
-`docs/spec-questions.md`: bytes are decoded as UTF-8 strictly rather than
-substituted through (`D-009`), a document a parser would have to recover from is
-refused rather than repaired (`D-010`), and a document type declaration is
-refused outright (`D-011`).
+`D-017` has the argument and the cost.
 
 ## Install and test
 

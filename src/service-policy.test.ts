@@ -5,7 +5,7 @@ import {
   BASELINE_SERVICE_POLICY,
   servicePolicy,
 } from './service-policy.js';
-import { ServicePolicyError } from './types.js';
+import { ValidationInputError } from './types.js';
 
 const AUDIENCE = 'https://fser.regione.veneto.it/Registry';
 
@@ -57,14 +57,14 @@ describe('servicePolicy — what it refuses to build', () => {
       // A blank audience is the absence of a service to check against, and a
       // policy holding one would refuse every scoped assertion while accepting
       // every generic one — a fail-open shaped like a fail-closed.
-      expect(() => servicePolicy({ audience })).toThrow(ServicePolicyError);
+      expect(() => servicePolicy({ audience })).toThrow(ValidationInputError);
     },
   );
 
   it('refuses an audience that is not an absolute URI', () => {
     // §4.1.6.2.2 asks an Audience to name its service by a URL given in full. A
     // path cannot be compared against one the IAP wrote in full.
-    expect(() => servicePolicy({ audience: '/Registry' })).toThrow(ServicePolicyError);
+    expect(() => servicePolicy({ audience: '/Registry' })).toThrow(ValidationInputError);
   });
 
   it('stores the audience without the whitespace around it', () => {
@@ -78,7 +78,7 @@ describe('servicePolicy — what it refuses to build', () => {
   it('refuses a matching mode it does not implement', () => {
     const input = { audience: AUDIENCE, audienceMatching: 'loose' } as never;
 
-    expect(() => servicePolicy(input)).toThrow(ServicePolicyError);
+    expect(() => servicePolicy(input)).toThrow(ValidationInputError);
   });
 
   it('names the failing value rather than reporting that something was wrong', () => {

@@ -9,7 +9,7 @@
  *
  * A predicate rather than a checker that throws, because the two callers raise
  * different errors — `RequestInputError` on the request side,
- * `ServicePolicyError` on the validation side — and the message each writes
+ * `ValidationInputError` on the validation side — and the message each writes
  * names the field it was given, which this module does not know.
  */
 

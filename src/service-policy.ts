@@ -29,10 +29,10 @@
  * good. The audience is the exception, and the reason it is the exception is
  * that the caller is the one that asked for the audience — it is checking its
  * own request was honoured, not re-deciding an entitlement. Argued in
- * `docs/spec-questions.md` (D-014).
+ * `docs/spec-questions.md` (D-017).
  */
 
-import { ServicePolicyError } from './types.js';
+import { ValidationInputError } from './types.js';
 import { isAbsoluteUri } from './uri.js';
 
 /**
@@ -40,7 +40,7 @@ import { isAbsoluteUri } from './uri.js';
  *
  * `exact` is the baseline and fails closed — see {@link BASELINE_SERVICE_POLICY}.
  * `normalised` is for a tenant whose IAP is known to rewrite the URL it was
- * handed; it is argued, with its cost, in `docs/spec-questions.md` (D-013).
+ * handed; it is argued, with its cost, in `docs/spec-questions.md` (D-016).
  */
 export type AudienceMatching = 'exact' | 'normalised';
 
@@ -111,12 +111,13 @@ export interface ServicePolicy {
  *
  * The read-across is the inference. The excerpt in hand is missing the pages
  * that would confirm it (`docs/spec-questions.md`, Q-001), so nothing here
- * claims the specification states this for RVE-1.b. A caller that knows its
- * service is one of §3.1.1's confidential ones overrides it, and the override
- * is the point of the policy being caller-supplied.
+ * claims the specification states this for RVE-1.b — the argument, and the cost
+ * of being wrong about it, are in `docs/spec-questions.md` (D-015). A caller
+ * that knows its service is one of §3.1.1's confidential ones overrides it, and
+ * the override is the point of the policy being caller-supplied.
  *
  * `exact` is not an inference from anything; it is the conservative half of a
- * choice the specification does not address at all (D-013).
+ * choice the specification does not address at all (D-016).
  */
 export const BASELINE_SERVICE_POLICY = {
   refusesGenericAssertions: false,
@@ -124,16 +125,16 @@ export const BASELINE_SERVICE_POLICY = {
 } as const satisfies Omit<ServicePolicy, typeof CHECKED | 'audience'>;
 
 /**
- * Builds a checked {@link ServicePolicy}, or throws {@link ServicePolicyError}
+ * Builds a checked {@link ServicePolicy}, or throws {@link ValidationInputError}
  * naming the value it refused.
  *
  * Throws rather than returning a result because a policy is assembled from the
- * caller's own configuration — see {@link ServicePolicyError}.
+ * caller's own configuration — see {@link ValidationInputError}.
  */
 export function servicePolicy(input: ServicePolicyInput): ServicePolicy {
   const audienceMatching = input.audienceMatching ?? BASELINE_SERVICE_POLICY.audienceMatching;
   if (!AUDIENCE_MATCHING_MODES.includes(audienceMatching)) {
-    throw new ServicePolicyError(
+    throw new ValidationInputError(
       `${JSON.stringify(audienceMatching)} is not an audience matching mode. The modes are ${AUDIENCE_MATCHING_MODES.map((mode) => JSON.stringify(mode)).join(' and ')}.`,
     );
   }
@@ -149,7 +150,7 @@ export function servicePolicy(input: ServicePolicyInput): ServicePolicy {
 
 /**
  * The audience `input` names, checked and stored without the whitespace around
- * it. Throws {@link ServicePolicyError} otherwise.
+ * it. Throws {@link ValidationInputError} otherwise.
  *
  * Trimmed here rather than at each comparison, so that `policy.audience` is the
  * value a caller can use — an indent that arrived from tenant configuration
@@ -161,13 +162,13 @@ function checkedAudience(value: string): string {
   const audience = value.trim();
 
   if (audience.length === 0) {
-    throw new ServicePolicyError(
+    throw new ValidationInputError(
       'The service audience is blank. It must be the URL, in full, of the service about to be called.',
     );
   }
 
   if (!isAbsoluteUri(audience)) {
-    throw new ServicePolicyError(
+    throw new ValidationInputError(
       `The service audience is ${JSON.stringify(value)}, which is not an absolute URI.`,
     );
   }

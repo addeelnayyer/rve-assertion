@@ -145,12 +145,8 @@ function absent(detail: string): SignatureOutcome {
       // ERR_00053 names an assertion that is not signed — Appendix A.5,
       // Table 12. The neighbouring signature codes of Table 8 all describe a
       // signature that exists and does not check out, which is the other branch
-      // of this module and not this one. An annotation, as everything here is —
-      // see `docs/spec-questions.md` (D-022).
+      // of this module and not this one. See `docs/spec-questions.md` (D-022).
       regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_NOT_SIGNED,
-      // Not a claim that a retry would help — an IAP that returned an unsigned
-      // assertion may sign the next one. Nor a claim that it would: what to do
-      // about a failure is the remedy's to say.
       unrecoverable: false,
     },
   };
@@ -167,8 +163,6 @@ function malformed(detail: string): SignatureOutcome {
       // describes a structural problem with a signature rather than a
       // cryptographic one.
       regionalErrorCode: REGIONAL_ERROR_CODES.SIGNATURE_MALFORMED,
-      // A defect in what this IAP returned this time, which says nothing about
-      // what it returns next time.
       unrecoverable: false,
     },
   };
@@ -195,11 +189,9 @@ function notBound(detail: string): SignatureOutcome {
       code: 'signature-not-bound',
       detail,
       regionalErrorCode: REGIONAL_ERROR_CODES.SIGNATURE_MALFORMED,
-      // Deliberately not marked unrecoverable, though it is the most alarming
-      // failure here. The claim would be about the transaction rather than
-      // about this document: a fresh request may well return an assertion whose
-      // signature binds. Whether to make one at all, having seen this, is a
-      // decision above this library.
+      // Not unrecoverable, though it is the most alarming failure here: the
+      // claim would be about the transaction rather than about this document,
+      // and a fresh request may well return an assertion whose signature binds.
       unrecoverable: false,
     },
   };
@@ -284,9 +276,8 @@ export function signatureIntegrity(assertion: Element, assertionId: string): Sig
 
   const signatureValue = onlyChild(signature, XML_SIGNATURE_NAMESPACE, 'SignatureValue');
   if (signatureValue === undefined || text(signatureValue) === undefined) {
-    // Empty counts as absent. A ds:SignatureValue with no base64 in it carries
-    // no signature, and accepting the element for its own sake would be exactly
-    // the presence check this module exists not to be.
+    // Empty counts as absent: a ds:SignatureValue with no base64 in it carries
+    // no signature.
     return malformed(
       'the signature does not carry exactly one non-empty ds:SignatureValue element, which §4.1.6.2.2 requires.',
     );
@@ -411,8 +402,6 @@ export function cryptographicVerification(
       };
 
     case 'not-attempted':
-      // The stated limitation, travelling with the result rather than living
-      // only in the README where a caller may never meet it.
       return passed([
         {
           code: 'signature-not-cryptographically-verified',

@@ -1,8 +1,4 @@
 /**
- * Shared types.
- */
-
-/**
  * Thrown when caller code hands the request side an input it cannot build from.
  *
  * Deliberately asymmetric with the assertion validator, which returns a

@@ -23,8 +23,5 @@
  * and cannot be compared against one written in full.
  */
 export function isAbsoluteUri(value: string): boolean {
-  // `URL.canParse` rather than a parse inside a `try`: the question is whether
-  // the value parses, and asking it directly leaves no catch block whose body
-  // is unobservable from outside the function.
   return URL.canParse(value);
 }

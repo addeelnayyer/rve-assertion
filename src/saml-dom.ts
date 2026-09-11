@@ -22,13 +22,8 @@ import type { Element } from '@xmldom/xmldom';
 
 import { SAML_ASSERTION_NAMESPACE } from './namespaces.js';
 
-/** `Node.ELEMENT_NODE`, named rather than written as a bare 1. */
 const ELEMENT_NODE = 1;
-
-/** `Node.TEXT_NODE`, named rather than written as a bare 3. */
 const TEXT_NODE = 3;
-
-/** `Node.CDATA_SECTION_NODE`, named rather than written as a bare 4. */
 const CDATA_SECTION_NODE = 4;
 
 /**

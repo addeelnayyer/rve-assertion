@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@xmldom/xmldom": "^0.9.8",
+    "@xmldom/xmldom": "^0.9.12",
     "xmlbuilder2": "^4.0.3",
     "xpath": "^0.0.34"
   },

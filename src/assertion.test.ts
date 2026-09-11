@@ -287,8 +287,8 @@ describe('validateAssertion — the structural phase', () => {
   });
 
   it('reports exactly one failure for bytes that are not XML at all', () => {
-    // The short-circuit, stated as the ticket states it: nothing downstream of
-    // the parse can have an opinion about a document that does not exist.
+    // The short-circuit: nothing downstream of the parse can have an opinion
+    // about a document that does not exist.
     const failure = onlyFailure(bytes('this is not a document'));
 
     expect(failure.code).toBe('malformed');
@@ -425,8 +425,8 @@ describe('validateAssertion — structural signature integrity', () => {
   });
 
   it('reports an absent signature and a malformed one as distinct failures', () => {
-    // The distinction the ticket asks for, asserted in one place so that
-    // collapsing the two later breaks a test that says why they are separate.
+    // Asserted in one place, so that collapsing the two later breaks a test
+    // that says why they are separate.
     const absent = onlyFailure(bytes(assertionXml({ signature: '' })));
     const malformed = onlyFailure(
       bytes(assertionXml({ signature: signatureXml({ signedInfo: '' }) })),

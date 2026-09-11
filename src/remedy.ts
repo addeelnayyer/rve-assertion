@@ -246,11 +246,8 @@ export function deriveRemedy(
 
   const covering = RESOLVING_ACTIONS.filter((action) => resolves(action, codes));
 
-  // Fail-hard first, and outside the order rather than on top of it. It
-  // resolves the empty set, so it can never be the least covering remedy and
-  // the fold below can never reach it — this is the only place it is decided.
-  // One failure that no remedy resolves empties this list whatever is beside
-  // it, which is what absorbing means. It carries nothing: see {@link Remedy}.
+  // The only place fail-hard is decided: it resolves the empty set, so the
+  // fold below can never reach it. See the module comment.
   if (covering.length === 0) {
     return { action: 'fail-hard' };
   }

@@ -34,15 +34,14 @@
  *
  * The structural phase asks whether there is an assertion here at all:
  * parseable, an assertion element at the root, one assertion element in the
- * whole document, the attributes §4.1.6.2.2 makes
- * mandatory, exactly one each of the elements it requires — the issuer, the
- * subject, and the conditions carrying the validity window — and one operator
- * identifier in the subject. It reports one
- * failure and stops, in both directions — it does not accumulate structural
- * failures, and it does not let the later phases run. Neither would be worth
- * anything: a document that failed to parse has no audience to compare, no
- * window to check and no signature to bind, so every later check would report a
- * missing thing that is missing only because the document is.
+ * whole document, the attributes §4.1.6.2.2 makes mandatory, exactly one each
+ * of the elements it requires — the issuer, the subject, and the conditions
+ * carrying the validity window — and one operator identifier in the subject. It
+ * reports one failure and stops, in both directions — it does not accumulate
+ * structural failures, and it does not let the later phases run. Neither would
+ * be worth anything: a document that failed to parse has no audience to
+ * compare, no window to check and no signature to bind, so every later check
+ * would report a missing thing that is missing only because the document is.
  *
  * The signature is mandatory too and is deliberately not checked there:
  * §4.1.6.2.2 makes it an element like the others, but its absence and its being
@@ -75,11 +74,10 @@
  * level it must attest are all checked against a policy the caller supplies,
  * because §3.1.1 and §4.2.5.3.1 between them make "does this service accept
  * this assertion" a property of the service and of the organisation's own
- * policies rather than of the RVE-1.b transaction.
- * `src/service-policy.ts` holds the type and the reasoning; here it is one more
- * required argument, for the same reason the clock is one: there is no
- * validating an assertion without saying when, and against what, it is about to
- * be spent.
+ * policies rather than of the RVE-1.b transaction. `src/service-policy.ts`
+ * holds the type and the reasoning; here it is one more required argument, for
+ * the same reason the clock is one: there is no validating an assertion without
+ * saying when, and against what, it is about to be spent.
  *
  * ## Time is an argument, not an ambient fact
  *
@@ -211,12 +209,11 @@ export type AssertionFailureCode =
  * **The detail never quotes the document.** It is one sentence about what was
  * expected, in constant text — or, for a missing attribute, in the caller's own
  * words, since the name of an attribute the caller asked for came from the
- * caller. An assertion carries the operator's tax code, and
- * on some documents it carries a patient identifier; a detail that echoed what
- * it found would put those into whatever logs the failure, including on the
- * refusal paths where nothing has been validated and the document may be
- * hostile. Diagnosis of a specific document is the caller's, against the bytes
- * it still holds.
+ * caller. An assertion carries the operator's tax code, and on some documents
+ * it carries a patient identifier; a detail that echoed what it found would put
+ * those into whatever logs the failure, including on the refusal paths where
+ * nothing has been validated and the document may be hostile. Diagnosis of a
+ * specific document is the caller's, against the bytes it still holds.
  */
 export interface AssertionFailure {
   readonly code: AssertionFailureCode;
@@ -287,10 +284,6 @@ export interface ValidAssertion {
    * on: a deprecated algorithm the region permits, and — in every build where
    * the caller supplied no verifier — the fact that no signature was
    * cryptographically verified.
-   *
-   * On the success branch rather than beside the failures, because none of it
-   * is a reason to refuse the assertion and none of it should be reachable
-   * where a caller is handling refusals.
    */
   readonly warnings: readonly AssertionWarning[];
 
@@ -397,10 +390,8 @@ function refused(detail: string): StructuralRefusal {
     // *absent* from a message an X-Service Provider was checking, and this
     // library is not that party and has no message. What it can say is that the
     // bytes it was handed are not a recognisable token, which is ERR_00023.
-    // The annotation is a best match either way — see {@link AssertionFailure}.
     regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_TOKEN_UNRECOGNISABLE,
-    // Not a claim that a retry would help — see {@link AssertionFailure}. A
-    // caller that mis-sliced a SOAP response fixes its own code; an IAP that
+    // A caller that mis-sliced a SOAP response fixes its own code; an IAP that
     // returned nonsense might not the next time.
     unrecoverable: false,
   };
@@ -579,13 +570,7 @@ interface StructureRead {
   readonly conditions: Element;
   readonly subjectIdentifier: string;
 
-  /**
-   * The assertion's own `ID`, which the signature's reference has to name.
-   *
-   * Carried rather than re-read by the phase that compares against it: this
-   * phase has already established that the attribute is present and non-blank,
-   * and reading it a second time is a second chance to read it differently.
-   */
+  /** The assertion's own `ID`, which the signature's reference has to name. */
   readonly id: string;
 }
 
@@ -680,9 +665,7 @@ function readStructure(assertion: Uint8Array): StructuralRead {
   // Each mandatory part is asked for once, where what it produces is used.
   // Counting them somewhere above and reading them here would make one of the
   // two unreachable, and an unreachable check is one no test can hold to being
-  // right. `ds:Signature` is mandatory too and is deliberately checked
-  // elsewhere: its absence and its being malformed map to different regional
-  // error codes, which a refusal from here would collapse into `malformed`.
+  // right. `ds:Signature` is the exception, and the module comment says why.
   const id = attribute(element, 'ID');
   if (id === undefined) {
     return refused('the assertion carries no ID attribute.');
@@ -811,9 +794,8 @@ function checkWindow(
       detail:
         "the assertion's validity window has not opened yet, allowing for clock skew. Either this host's clock is behind the issuer's by more than the skew allowed, or the assertion was issued to start in the future.",
       // ERR_00031 — Appendix A.5, Table 10: NotBefore later than the moment of
-      // use. An annotation, as everything here is — see {@link AssertionFailure}.
+      // use.
       regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_NOT_YET_VALID,
-      // A clock moves. So does the instant the window opens at.
       unrecoverable: false,
     });
   }
@@ -827,7 +809,6 @@ function checkWindow(
       // moment of use. Reported for a window that has not closed yet but will
       // close in flight, which is the same refusal arriving earlier.
       regionalErrorCode: REGIONAL_ERROR_CODES.ASSERTION_EXPIRED,
-      // A fresh assertion is exactly the round trip this does not rule out.
       unrecoverable: false,
     });
   }
@@ -851,7 +832,6 @@ function audienceFailure(code: 'audience-mismatch' | 'audience-absent'): Asserti
         ? 'the assertion names no audience, and this service was declared to refuse a generic assertion.'
         : 'the assertion is scoped to services that do not include the one it was validated against.',
     regionalErrorCode: REGIONAL_ERROR_CODES.AUDIENCE_NOT_PERMITTED,
-    // A re-request scoped to this service is the remedy, and it exists.
     unrecoverable: false,
   };
 }
@@ -915,14 +895,12 @@ function checkAudience(conditions: Element, policy: ServicePolicy): readonly Ass
     : [audienceFailure('audience-mismatch')];
 }
 
-
 /**
  * The regional code that names a missing attribute best, per attribute.
  *
  * No code in Appendix A.5 names an attribute that is absent, so each of these
  * is the nearest neighbour to a question the region asks differently. The
- * choice is argued in `docs/spec-questions.md` (D-022); the annotation is a
- * best match either way, per {@link AssertionFailure}.
+ * choice is argued in `docs/spec-questions.md` (D-022).
  */
 const ATTRIBUTE_ERROR_CODES: Readonly<Record<string, RegionalErrorCode>> = {
   [ASSERTION_ATTRIBUTES.REQUEST_CONTEXT]: REGIONAL_ERROR_CODES.REQUEST_CONTEXT_NOT_PERMITTED,
@@ -1021,9 +999,6 @@ function checkAuthenticationLevel(
           detail:
             "the service requires an authentication level the assertion does not attest. The operator must authenticate again with a second factor, which is the session's work and not a re-request.",
           regionalErrorCode: REGIONAL_ERROR_CODES.TWO_FACTOR_AUTHENTICATION_REQUIRED,
-          // The operator can authenticate again with a second factor. That is
-          // the session layer's work rather than a re-request, but it is work
-          // that exists.
           unrecoverable: false,
         },
       ],
@@ -1131,11 +1106,8 @@ function invalid(
  * confidential services make "is this assertion acceptable" a question that
  * cannot be asked without naming the service asking it.
  *
- * **Incomplete — see the module comment.** The structure, the signature's
- * structure and binding, the validity window, the audience, the attributes the
- * service requires and the operator's identity are checked. The signature is
- * verified only if `options.verifySignature` says so, and a valid result
- * carries a warning saying which of those happened.
+ * **Incomplete — see the module comment for what a valid result does and does
+ * not mean.**
  */
 export function validateAssertion(
   assertion: Uint8Array,
@@ -1166,7 +1138,6 @@ export function validateAssertion(
     return invalid([verification.failure], policy);
   }
 
-  // The semantic phase: every check runs, and every failure is reported.
   const attributes = readAssertionAttributes(structure.assertion);
   const { failures: windowFailures, usableUntil } = checkWindow(structure.window, time);
   const { failures: levelFailures, authenticationLevel } = checkAuthenticationLevel(

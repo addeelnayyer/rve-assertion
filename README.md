@@ -523,12 +523,30 @@ npm install
 npm test
 ```
 
-No compiler, no `node-gyp`, no build step. That is a deliberate constraint, not
-a coincidence — see below.
+No compiler, no `node-gyp`, no build step for the library. That is a deliberate
+constraint, not a coincidence — see below.
 
 ```sh
-npm run typecheck   # tsc --noEmit
+npm run typecheck   # tsc --noEmit, over src/ and playground/
 ```
+
+### The playground
+
+```sh
+npm run playground
+```
+
+This serves a page that runs `src/` in the browser. On it you build an RVE-1.b
+request, shape an assertion and a service policy, and read what
+`validateAssertion` returns: accepted with its warnings, refused with its
+failures and remedy, or thrown before anything was judged. Presets start from
+the cases worth seeing first. The switch "Follow the request" lets the built
+request's audiences and authentication level decide the assertion's scope and
+the level the service policy requires.
+
+Vite serves the page and is used for nothing else. `playground/` is not
+published, and `playground/composer.test.ts` holds it to the same behaviour the
+page shows.
 
 ### Mutation testing
 
@@ -646,7 +664,9 @@ The three XML packages are declared before anything imports them, because the
 no-compiler claim above is only worth making about the dependency set the
 library actually ships with — installing them is what tests it.
 
-Development dependencies are limited to TypeScript, Vitest and Node types.
+Development dependencies are limited to TypeScript, Vitest, Node types, and
+Vite. Vite serves the playground and nothing else; Vitest already depended on
+it.
 
 ## Documentation
 
